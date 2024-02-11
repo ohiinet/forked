@@ -1,3 +1,4 @@
+### Support HUAWEIcloud DNS-sets ——update 2024.08.02
 ### Fix: DNSPod DNS API2.0 -> API3.0 ——update 2023.1.3
    [API 2.0 offline](https://cloud.tencent.com/document/product/1278/82311) By github@z0z0r4
    

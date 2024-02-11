@@ -61,7 +61,7 @@ class HuaWeiApi():
             name = name,
             ttl = ttl,
             weight = 1,
-            records = [value],
+            records = value if isinstance(value, list) else [value] ,
             line = self.line_format(line)
         )
         response = self.client.create_record_set_with_line(request)
@@ -80,7 +80,7 @@ class HuaWeiApi():
             name = name,
             type = record_type,
             ttl = ttl,
-            records=[value]
+            records = value if isinstance(value, list) else [value]
         )
         response = self.client.update_record_set(request)
         result = json.loads(str(response))
