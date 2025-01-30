@@ -20,7 +20,7 @@ SECRETID = os.environ["SECRETID"]    #'AKIDV**********Hfo8CzfjgN'
 SECRETKEY = os.environ["SECRETKEY"]   #'ZrVs*************gqjOp1zVl'
 
 #DNSPOD免费版只支持两条, 华为支持集合
-AFFECT_NUM = 1
+AFFECT_NUM = 3
 #DNS服务商 DNSPod改为1 阿里云解析改成2  华为云解析改成3 华为云解析集合3.1
 DNS_SERVER = 3.1
 #如果试用华为云解析 需要从API凭证-项目列表中获取
@@ -47,7 +47,7 @@ if RECORD_TYPE == "A":
 
     self_cm_cfips = ""
     self_cu_cfips = ""
-    self_ct_cfips = "104.19.37.227, 8.20.125.2, 104.19.138.18"
+    self_ct_cfips = ""
     self_def_cfips = ""
     self_cm_cfips_list = [{"ip": ip} for ip in self_cm_cfips.split(',')]
     self_cu_cfips_list = [{"ip": ip} for ip in self_cu_cfips.split(',')]
@@ -59,7 +59,7 @@ else:
     self_cm_cfips = ""
     self_cu_cfips = ""
     self_ct_cfips = ""
-    self_def_cfips = "2606:4700:91b8::, 2a06:98c1:56::"
+    self_def_cfips = ""
     self_cm_cfips_list = [{"ip": ip} for ip in self_cm_cfips.split(',')]
     self_cu_cfips_list = [{"ip": ip} for ip in self_cu_cfips.split(',')]
     self_ct_cfips_list = [{"ip": ip} for ip in self_ct_cfips.split(',')]
