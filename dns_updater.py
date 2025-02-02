@@ -9,8 +9,6 @@ import os
 import traceback
 import logging
 import sys
-from dns.qCloud import QcloudApiv3  # QcloudApiv3 DNSPod 的 API 更新了 github@z0z0r4
-from dns.aliyun import AliApi
 from dns.huawei import HuaWeiApi
 
 # 配置日志
@@ -28,7 +26,6 @@ def get_env_or_raise(key):
     return value
 
 try:
-    KEY = get_env_or_raise("KEY")
     DOMAINS_JSON = get_env_or_raise("DOMAINS")
     SECRETID = get_env_or_raise("SECRETID")
     SECRETKEY = get_env_or_raise("SECRETKEY")
@@ -44,94 +41,60 @@ except json.JSONDecodeError as e:
 
 # 其他配置
 AFFECT_NUM = 3  # 默认影响记录数
-DNS_SERVER = os.getenv("DNS_SERVER", "3.1")  # 使用字符串标识服务商
-TTL = int(os.getenv("TTL", 300))  # 默认 TTL 600 秒
+DNS_SERVER = os.getenv("DNS_SERVER", "3.1")  # 使用华为云DNS，支持 3 和 3.1 两种模式
+TTL = int(os.getenv("TTL", 300))  # 默认 TTL 300 秒
 RECORD_TYPE = sys.argv[1] if len(sys.argv) >= 2 else "A"  # 记录类型 A/AAAA
-REGION_HW =  os.getenv("REGION_HW", "cn-east-3") 
+REGION_HW = os.getenv("REGION_HW", "cn-east-3")
 
 # API 配置
-API_1 = 'https://api.hostmonit.com/get_optimization_ip'
-API_2 = 'https://api.345673.xyz/get_data'
-API_3 = 'https://www.wetest.vip/api/cf2dns/get_cloudflare_ip'
-API_4 = 'https://api.vvhan.com/tool/cf_ip'  # 更新为正确的 API 地址
+API = 'https://api.vvhan.com/tool/cf_ip'
 
-# 自定义 IP 配置
 def parse_custom_ips(ip_str):
     return [{"ip": ip.strip()} for ip in ip_str.split(',') if ip.strip()]
 
-if RECORD_TYPE == "A":
-    API = API_4
-    self_cm_cfips = ""
-    self_cu_cfips = ""
-    self_ct_cfips = ""
-    self_def_cfips = ""
-else:
-    API = API_4
-    self_cm_cfips = ""
-    self_cu_cfips = ""
-    self_ct_cfips = ""
-    self_def_cfips = ""
+# 自定义 IP 配置
+self_cm_cfips = ""
+self_cu_cfips = ""
+self_ct_cfips = ""
+self_def_cfips = ""
 
 self_cm_cfips_list = parse_custom_ips(self_cm_cfips)
 self_cu_cfips_list = parse_custom_ips(self_cu_cfips)
 self_ct_cfips_list = parse_custom_ips(self_ct_cfips)
 self_def_cfips_list = parse_custom_ips(self_def_cfips)
 
-# DNS 服务商映射表
-DNS_PROVIDERS = {
-    "1": QcloudApiv3,
-    "2": AliApi,
-    "3": HuaWeiApi,
-    "3.1": HuaWeiApi  # 华为云特殊版本
-}
-
-# 核心功能函数
 def get_optimization_ip():
     """获取优化后的 IP 地址"""
     try:
-        if API == API_4:
-            response = requests.get(API, timeout=10)
-            response.raise_for_status()
-            result = response.json()
+        response = requests.get(API, timeout=10)
+        response.raise_for_status()
+        result = response.json()
+        
+        if not result.get("success") or "data" not in result:
+            logging.error(f"API 返回异常数据: {json.dumps(result)}")
+            return None
             
-            if not result.get("success") or "data" not in result:
-                logging.error(f"API 返回异常数据: {json.dumps(result)}")
-                return None
-                
-            ip_data = result["data"]["v4" if RECORD_TYPE == "A" else "v6"]
-            
-            # 为每个运营商选择延迟最低的IP
-            formatted_result = {
-                "code": 200,
-                "info": {}
-            }
-            
-            for isp in ["CM", "CU", "CT"]:
-                if isp in ip_data and ip_data[isp]:
-                    # 按延迟排序，选择延迟最低的IP
-                    sorted_ips = sorted(ip_data[isp], key=lambda x: x.get("latency", float('inf')))
-                    # 取延迟最低的前 AFFECT_NUM 个IP
-                    best_ips = sorted_ips[:AFFECT_NUM]
-                    formatted_result["info"][isp] = [{"ip": ip["ip"]} for ip in best_ips]
-            
-            # 默认线路使用移动线路的IP
-            if "CM" in formatted_result["info"]:
-                formatted_result["info"]["DEF"] = formatted_result["info"]["CM"]
-            
-            return formatted_result
-        else:
-            # 原有 API 的处理逻辑
-            headers = {'Content-Type': 'application/json'}
-            data = {"key": KEY, "type": "v4" if RECORD_TYPE == "A" else "v6"}
-            response = requests.post(API, json=data, headers=headers, timeout=10)
-            response.raise_for_status()
-            
-            result = response.json()
-            if result.get("code") != 200 or "info" not in result:
-                logging.error(f"API 返回异常数据: {json.dumps(result)}")
-                return None
-                
-            return result
+        ip_data = result["data"]["v4" if RECORD_TYPE == "A" else "v6"]
+        
+        # 为每个运营商选择延迟最低的IP
+        formatted_result = {
+            "code": 200,
+            "info": {}
+        }
+        
+        for isp in ["CM", "CU", "CT"]:
+            if isp in ip_data and ip_data[isp]:
+                # 按延迟排序，选择延迟最低的IP
+                sorted_ips = sorted(ip_data[isp], key=lambda x: x.get("latency", float('inf')))
+                # 取延迟最低的前 AFFECT_NUM 个IP
+                best_ips = sorted_ips[:AFFECT_NUM]
+                formatted_result["info"][isp] = [{"ip": ip["ip"]} for ip in best_ips]
+        
+        # 默认线路使用移动线路的IP
+        if "CM" in formatted_result["info"]:
+            formatted_result["info"]["DEF"] = formatted_result["info"]["CM"]
+        
+        return formatted_result
             
     except requests.exceptions.RequestException as e:
         logging.error(f"请求优化 IP API 失败: {str(e)}")
@@ -144,21 +107,6 @@ def get_optimization_ip():
 def validate_ips(ip_list):
     """验证 IP 列表有效性"""
     return [ip for ip in ip_list if isinstance(ip, dict) and "ip" in ip]
-
-def concatenate_ips(c_info, s_info):
-    """合并 IP 地址并去重"""
-    new_ips = []
-    c_info_copy = c_info.copy()
-    
-    while c_info_copy:
-        idx = random.randint(0, len(c_info_copy) - 1)
-        current_ip = c_info_copy.pop(idx)
-        
-        # 检查是否已存在
-        if not any(current_ip["ip"] == record.get("value") for record in s_info):
-            new_ips.append(current_ip["ip"])
-    
-    return new_ips[:AFFECT_NUM]  # 最多返回 AFFECT_NUM 个 IP
 
 def handle_dns_records(cloud, domain, sub_domain, line_config):
     """处理 DNS 记录的核心逻辑"""
@@ -178,8 +126,6 @@ def handle_dns_records(cloud, domain, sub_domain, line_config):
         # 获取现有记录
         try:
             records = cloud.get_record(domain, 100, sub_domain, RECORD_TYPE)
-            if DNS_SERVER == "1" and records.get("code") != 0:
-                raise Exception(records.get("message", "获取记录失败"))
         except Exception as e:
             logging.error(f"获取记录失败: {str(e)}")
             continue
@@ -208,40 +154,20 @@ def handle_dns_records(cloud, domain, sub_domain, line_config):
         new_ips = [ip["ip"] for ip in valid_ips[:AFFECT_NUM]]
         
         try:
-            if DNS_SERVER in ["3", "3.1"]:  # 华为云处理逻辑
-                if current_records:
-                    # 更新现有记录，使用IP列表而不是逗号分隔的字符串
-                    record_id = current_records[0]["recordId"]
-                    cloud.change_record(domain, record_id, sub_domain, new_ips, RECORD_TYPE, line_name, TTL)
-                    logging.info(f"更新记录成功 {domain} {sub_domain} {line_name} -> {new_ips}")
-                else:
-                    # 创建新记录，使用IP列表
-                    cloud.create_record(domain, sub_domain, new_ips, RECORD_TYPE, line_name, TTL)
-                    logging.info(f"创建记录成功 {domain} {sub_domain} {line_name} -> {new_ips}")
-                
-                # 删除多余的记录（如果存在）
-                for record in current_records[1:]:
-                    cloud.del_record(domain, record["recordId"])
-                    logging.info(f"删除多余记录 {domain} {sub_domain} {line_name}")
+            if current_records:
+                # 更新现有记录，使用IP列表
+                record_id = current_records[0]["recordId"]
+                cloud.change_record(domain, record_id, sub_domain, new_ips, RECORD_TYPE, line_name, TTL)
+                logging.info(f"更新记录成功 {domain} {sub_domain} {line_name} -> {new_ips}")
             else:
-                # 其他DNS服务商的原有处理逻辑
-                existing_num = len(current_records)
-                create_num = AFFECT_NUM - existing_num
-
-                if create_num == 0:  # 更新现有记录
-                    for record, new_ip in zip(current_records, new_ips):
-                        cloud.change_record(domain, record["recordId"], sub_domain, new_ip, RECORD_TYPE, line_name, TTL)
-                        logging.info(f"更新记录成功 {domain} {sub_domain} {line_name} -> {new_ip}")
-
-                elif create_num > 0:  # 创建新记录
-                    for new_ip in new_ips[existing_num:]:
-                        cloud.create_record(domain, sub_domain, new_ip, RECORD_TYPE, line_name, TTL)
-                        logging.info(f"创建记录成功 {domain} {sub_domain} {line_name} -> {new_ip}")
-
-                else:  # 删除多余记录
-                    for record in current_records[:abs(create_num)]:
-                        cloud.del_record(domain, record["recordId"])
-                        logging.info(f"删除多余记录 {domain} {sub_domain} {line_name}")
+                # 创建新记录，使用IP列表
+                cloud.create_record(domain, sub_domain, new_ips, RECORD_TYPE, line_name, TTL)
+                logging.info(f"创建记录成功 {domain} {sub_domain} {line_name} -> {new_ips}")
+            
+            # 删除多余的记录（如果存在）
+            for record in current_records[1:]:
+                cloud.del_record(domain, record["recordId"])
+                logging.info(f"删除多余记录 {domain} {sub_domain} {line_name}")
 
         except Exception as e:
             logging.error(f"记录操作失败: {str(e)}")
@@ -249,21 +175,18 @@ def handle_dns_records(cloud, domain, sub_domain, line_config):
 
 def main():
     """主函数"""
-    # 初始化云服务商
-    provider_class = DNS_PROVIDERS.get(DNS_SERVER)
-    if not provider_class:
-        logging.error(f"不支持的 DNS 服务商配置: {DNS_SERVER}")
-        return
-
     try:
+        # 根据 DNS_SERVER 模式初始化华为云
+        if DNS_SERVER not in ["3", "3.1"]:
+            raise ValueError(f"不支持的 DNS_SERVER 值: {DNS_SERVER}，只支持 3 或 3.1")
+            
         if DNS_SERVER == "3.1":
-            cloud = provider_class(SECRETID, SECRETKEY, REGION_HW)
-        elif DNS_SERVER == "2":
-            cloud = provider_class(SECRETID, SECRETKEY, REGION_ALI)
-        else:
-            cloud = provider_class(SECRETID, SECRETKEY)
+            cloud = HuaWeiApi(SECRETID, SECRETKEY, REGION_HW)
+        else:  # DNS_SERVER == "3"
+            cloud = HuaWeiApi(SECRETID, SECRETKEY)
+            
     except Exception as e:
-        logging.error(f"初始化 DNS 服务商失败: {str(e)}")
+        logging.error(f"初始化华为云 DNS 失败: {str(e)}")
         return
 
     # 处理每个域名
