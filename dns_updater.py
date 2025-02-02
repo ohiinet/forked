@@ -177,16 +177,14 @@ def handle_dns_records(cloud, domain, sub_domain, line_config):
         try:
             if DNS_SERVER in ["3", "3.1"]:  # 华为云处理逻辑
                 if current_records:
-                    # 更新现有记录，使用逗号分隔的多个IP
+                    # 更新现有记录，使用IP列表而不是逗号分隔的字符串
                     record_id = current_records[0]["recordId"]
-                    new_ip_value = ",".join(new_ips)
-                    cloud.change_record(domain, record_id, sub_domain, new_ip_value, RECORD_TYPE, line_name, TTL)
-                    logging.info(f"更新记录成功 {domain} {sub_domain} {line_name} -> {new_ip_value}")
+                    cloud.change_record(domain, record_id, sub_domain, new_ips, RECORD_TYPE, line_name, TTL)
+                    logging.info(f"更新记录成功 {domain} {sub_domain} {line_name} -> {new_ips}")
                 else:
-                    # 创建新记录，使用逗号分隔的多个IP
-                    new_ip_value = ",".join(new_ips)
-                    cloud.create_record(domain, sub_domain, new_ip_value, RECORD_TYPE, line_name, TTL)
-                    logging.info(f"创建记录成功 {domain} {sub_domain} {line_name} -> {new_ip_value}")
+                    # 创建新记录，使用IP列表
+                    cloud.create_record(domain, sub_domain, new_ips, RECORD_TYPE, line_name, TTL)
+                    logging.info(f"创建记录成功 {domain} {sub_domain} {line_name} -> {new_ips}")
                 
                 # 删除多余的记录（如果存在）
                 for record in current_records[1:]:
