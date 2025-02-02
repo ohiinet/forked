@@ -108,8 +108,20 @@ def validate_ips(ip_list):
     """验证 IP 列表有效性"""
     return [ip for ip in ip_list if isinstance(ip, dict) and "ip" in ip]
 
+def mask_domain(domain):
+    """隐藏域名信息，只显示首尾字符"""
+    if not domain:
+        return "***"
+    if len(domain) <= 2:
+        return "*" * len(domain)
+    return f"{domain[0]}***{domain[-1]}"
+
 def handle_dns_records(cloud, domain, sub_domain, line_config):
     """处理 DNS 记录的核心逻辑"""
+    # 用于日志显示的掩码域名
+    masked_domain = mask_domain(domain)
+    masked_subdomain = mask_domain(sub_domain)
+    
     line_map = {
         "CM": ("移动", self_cm_cfips_list),
         "CU": ("联通", self_cu_cfips_list),
@@ -127,7 +139,7 @@ def handle_dns_records(cloud, domain, sub_domain, line_config):
         try:
             records = cloud.get_record(domain, 100, sub_domain, RECORD_TYPE)
         except Exception as e:
-            logging.error(f"获取记录失败: {str(e)}")
+            logging.error(f"获取记录失败: {masked_subdomain}.{masked_domain}")
             continue
 
         # 过滤当前线路记录
@@ -158,16 +170,16 @@ def handle_dns_records(cloud, domain, sub_domain, line_config):
                 # 更新现有记录，使用IP列表
                 record_id = current_records[0]["recordId"]
                 cloud.change_record(domain, record_id, sub_domain, new_ips, RECORD_TYPE, line_name, TTL)
-                logging.info(f"更新记录成功 {domain} {sub_domain} {line_name} -> {new_ips}")
+                logging.info(f"更新记录成功 {masked_subdomain}.{masked_domain} {line_name} -> {new_ips}")
             else:
                 # 创建新记录，使用IP列表
                 cloud.create_record(domain, sub_domain, new_ips, RECORD_TYPE, line_name, TTL)
-                logging.info(f"创建记录成功 {domain} {sub_domain} {line_name} -> {new_ips}")
+                logging.info(f"创建记录成功 {masked_subdomain}.{masked_domain} {line_name} -> {new_ips}")
             
             # 删除多余的记录（如果存在）
             for record in current_records[1:]:
                 cloud.del_record(domain, record["recordId"])
-                logging.info(f"删除多余记录 {domain} {sub_domain} {line_name}")
+                logging.info(f"删除多余记录 {masked_subdomain}.{masked_domain} {line_name}")
 
         except Exception as e:
             logging.error(f"记录操作失败: {str(e)}")
@@ -192,15 +204,15 @@ def main():
     # 处理每个域名
     for domain, sub_domains in DOMAINS.items():
         if not isinstance(sub_domains, dict):
-            logging.error(f"域名 {domain} 配置格式错误")
+            logging.error(f"域名 {mask_domain(domain)} 配置格式错误")
             continue
 
         for sub_domain, lines in sub_domains.items():
             if not isinstance(lines, list):
-                logging.error(f"子域名 {sub_domain} 配置格式错误")
+                logging.error(f"子域名 {mask_domain(sub_domain)} 配置格式错误")
                 continue
 
-            logging.info(f"正在处理 {sub_domain}.{domain}")
+            logging.info(f"正在处理 {mask_domain(sub_domain)}.{mask_domain(domain)}")
             handle_dns_records(cloud, domain, sub_domain, lines)
 
 if __name__ == '__main__':
