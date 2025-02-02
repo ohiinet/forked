@@ -33,6 +33,7 @@ jobs:
         SECRETKEY: ${{ secrets.SECRETKEY }}
         DNS_SERVER: "3.1"      # 华为云示例
         TTL: "300"
+        REGION_HW: "cn-east-3"
       run: |
         python dns_updater.py A
 
@@ -45,5 +46,6 @@ jobs:
         SECRETKEY: ${{ secrets.SECRETKEY }}
         DNS_SERVER: "3.1"      # 华为云示例
         TTL: "300"
+        REGION_HW: "cn-east-3"
       run: |
         python dns_updater.py AAAA
