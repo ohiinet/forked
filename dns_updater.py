@@ -53,19 +53,20 @@ REGION_HW =  os.getenv("REGION_HW", "cn-east-3")
 API_1 = 'https://api.hostmonit.com/get_optimization_ip'
 API_2 = 'https://api.345673.xyz/get_data'
 API_3 = 'https://www.wetest.vip/api/cf2dns/get_cloudflare_ip'
+API_4 = 'https://api.vvhan.com/tool/cf_ip'  # 更新为正确的 API 地址
 
 # 自定义 IP 配置
 def parse_custom_ips(ip_str):
     return [{"ip": ip.strip()} for ip in ip_str.split(',') if ip.strip()]
 
 if RECORD_TYPE == "A":
-    API = API_3
+    API = API_4
     self_cm_cfips = ""
     self_cu_cfips = ""
     self_ct_cfips = ""
     self_def_cfips = ""
 else:
-    API = API_3
+    API = API_4
     self_cm_cfips = ""
     self_cu_cfips = ""
     self_ct_cfips = ""
@@ -88,18 +89,45 @@ DNS_PROVIDERS = {
 def get_optimization_ip():
     """获取优化后的 IP 地址"""
     try:
-        headers = {'Content-Type': 'application/json'}
-        data = {"key": KEY, "type": "v4" if RECORD_TYPE == "A" else "v6"}
-        
-        response = requests.post(API, json=data, headers=headers, timeout=10)
-        response.raise_for_status()
-        
-        result = response.json()
-        if result.get("code") != 200 or "info" not in result:
-            logging.error(f"API 返回异常数据: {json.dumps(result)}")
-            return None
+        if API == API_4:
+            response = requests.get(API, timeout=10)
+            response.raise_for_status()
+            result = response.json()
             
-        return result
+            if not result.get("success") or "data" not in result:
+                logging.error(f"API 返回异常数据: {json.dumps(result)}")
+                return None
+                
+            ip_data = result["data"]["v4" if RECORD_TYPE == "A" else "v6"]
+            
+            # 构造返回结果，保持与其他 API 格式一致
+            formatted_result = {
+                "code": 200,
+                "info": {
+                    "CM": [{"ip": item["ip"]} for item in ip_data.get("CM", [])],
+                    "CU": [{"ip": item["ip"]} for item in ip_data.get("CU", [])],
+                    "CT": [{"ip": item["ip"]} for item in ip_data.get("CT", [])]
+                }
+            }
+            
+            # 添加默认线路数据（使用移动线路数据）
+            formatted_result["info"]["DEF"] = formatted_result["info"]["CM"]
+            
+            return formatted_result
+        else:
+            # 原有 API 的处理逻辑
+            headers = {'Content-Type': 'application/json'}
+            data = {"key": KEY, "type": "v4" if RECORD_TYPE == "A" else "v6"}
+            response = requests.post(API, json=data, headers=headers, timeout=10)
+            response.raise_for_status()
+            
+            result = response.json()
+            if result.get("code") != 200 or "info" not in result:
+                logging.error(f"API 返回异常数据: {json.dumps(result)}")
+                return None
+                
+            return result
+            
     except requests.exceptions.RequestException as e:
         logging.error(f"请求优化 IP API 失败: {str(e)}")
     except json.JSONDecodeError:
