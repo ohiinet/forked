@@ -1,4 +1,6 @@
 # Mail: tongdongdong@outlook.com
+import sys
+sys.path.append('./dns') 
 import random
 import time
 import json
