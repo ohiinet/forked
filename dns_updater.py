@@ -56,7 +56,7 @@ API_4 = 'https://api.vvhan.com/tool/cf_ip'
 if RECORD_TYPE == "A":
     API = API_4  # 默认使用 vvhan API
 else:
-    API = API_3  # AAAA 记录使用 wetest API
+    API = API_4  # AAAA 记录使用 wetest API
 
 def parse_custom_ips(ip_str):
     return [{"ip": ip.strip()} for ip in ip_str.split(',') if ip.strip()]
