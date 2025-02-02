@@ -100,18 +100,23 @@ def get_optimization_ip():
                 
             ip_data = result["data"]["v4" if RECORD_TYPE == "A" else "v6"]
             
-            # 构造返回结果，保持与其他 API 格式一致
+            # 为每个运营商选择延迟最低的IP
             formatted_result = {
                 "code": 200,
-                "info": {
-                    "CM": [{"ip": item["ip"]} for item in ip_data.get("CM", [])],
-                    "CU": [{"ip": item["ip"]} for item in ip_data.get("CU", [])],
-                    "CT": [{"ip": item["ip"]} for item in ip_data.get("CT", [])]
-                }
+                "info": {}
             }
             
-            # 添加默认线路数据（使用移动线路数据）
-            formatted_result["info"]["DEF"] = formatted_result["info"]["CM"]
+            for isp in ["CM", "CU", "CT"]:
+                if isp in ip_data and ip_data[isp]:
+                    # 按延迟排序，选择延迟最低的IP
+                    sorted_ips = sorted(ip_data[isp], key=lambda x: x.get("latency", float('inf')))
+                    # 取延迟最低的前 AFFECT_NUM 个IP
+                    best_ips = sorted_ips[:AFFECT_NUM]
+                    formatted_result["info"][isp] = [{"ip": ip["ip"]} for ip in best_ips]
+            
+            # 默认线路使用移动线路的IP
+            if "CM" in formatted_result["info"]:
+                formatted_result["info"]["DEF"] = formatted_result["info"]["CM"]
             
             return formatted_result
         else:
