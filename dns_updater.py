@@ -53,10 +53,7 @@ API_3 = 'https://www.wetest.vip/api/cf2dns/get_cloudflare_ip'
 API_4 = 'https://api.vvhan.com/tool/cf_ip'
 
 # 根据记录类型选择 API
-if RECORD_TYPE == "A":
-    API = API_4  # 默认使用 vvhan API
-else:
-    API = API_3  # AAAA 记录使用 wetest API
+API = API_4  # 默认使用 vvhan API
 
 def parse_custom_ips(ip_str):
     return [{"ip": ip.strip()} for ip in ip_str.split(',') if ip.strip()]
@@ -85,7 +82,7 @@ def get_optimization_ip():
     try:
         if API in [API_1, API_2]:  # hostmonit 和 345673 API
             headers = {'Content-Type': 'application/json'}
-            data = {"key": KEY, "type": "v4" if RECORD_TYPE == "A" else "v6"}
+            data = {"key": SECRETKEY, "type": "v4" if RECORD_TYPE == "A" else "v6"}
             response = requests.post(API, json=data, headers=headers, timeout=10)
         else:  # wetest 和 vvhan API
             response = requests.get(API, timeout=10)
@@ -94,34 +91,44 @@ def get_optimization_ip():
         result = response.json()
         
         if API == API_3:  # wetest API
-            if result.get("code") != 200 or "info" not in result:
+            if not result.get("status") or result.get("code") != 200 or "info" not in result:
                 logging.error(f"API 返回异常数据: {json.dumps(result)}")
                 return None
                 
-            # 特别处理 wetest API 的 IPv6 数据
-            if RECORD_TYPE == "AAAA":
-                formatted_result = {
-                    "code": 200,
-                    "info": {}
-                }
+            # wetest API 只处理 IPv4
+            if RECORD_TYPE != "A":
+                logging.error("wetest API 只支持 IPv4 地址")
+                return None
                 
-                # wetest API 返回的是单个运营商的数据
-                ipv6_list = []
-                for item in result["info"]:
-                    if ":" in item.get("ip", ""):  # 验证是否为 IPv6 地址
-                        ipv6_list.append({"ip": item["ip"]})
-                
-                if not ipv6_list:
-                    logging.error("没有找到有效的 IPv6 地址")
-                    return None
-                
-                # 为所有运营商使用相同的 IPv6 地址
-                for isp in ["CM", "CU", "CT", "DEF"]:
-                    formatted_result["info"][isp] = ipv6_list[:AFFECT_NUM]
-                
-                return formatted_result
+            formatted_result = {
+                "code": 200,
+                "info": {}
+            }
             
-            return result
+            # 处理每个运营商的数据
+            for isp in ["CM", "CU", "CT"]:
+                if isp in result["info"] and result["info"][isp]:
+                    # 按延迟排序
+                    sorted_ips = sorted(result["info"][isp], 
+                                     key=lambda x: x.get("delay", float('inf')))
+                    # 取延迟最低的前 AFFECT_NUM 个IP
+                    best_ips = sorted_ips[:AFFECT_NUM]
+                    formatted_result["info"][isp] = [{"ip": ip["address"]} for ip in best_ips]
+                    
+                    # 记录选中IP的延迟
+                    for ip in best_ips:
+                        logging.info(f"{isp} 线路选中IP: {ip['address']}, "
+                                   f"延迟: {ip.get('delay')}ms")
+            
+            # 默认线路使用移动线路的IP
+            if "CM" in formatted_result["info"]:
+                formatted_result["info"]["DEF"] = formatted_result["info"]["CM"]
+            elif formatted_result["info"]:
+                first_available = next(iter(formatted_result["info"].values()))
+                formatted_result["info"]["DEF"] = first_available
+                logging.info("默认线路使用其他可用线路的IP")
+            
+            return formatted_result
             
         elif API == API_4:  # vvhan API
             if not result.get("success") or "data" not in result:
