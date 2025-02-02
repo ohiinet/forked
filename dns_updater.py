@@ -171,32 +171,46 @@ def handle_dns_records(cloud, domain, sub_domain, line_config):
             logging.error(f"{line_code} 线路无有效 IP")
             continue
 
-        # 计算需要变更的记录数
-        existing_num = len(current_records)
-        create_num = AFFECT_NUM - existing_num
-
-        # 记录操作逻辑
+        # 提取所有有效IP地址
+        new_ips = [ip["ip"] for ip in valid_ips[:AFFECT_NUM]]
+        
         try:
-            if create_num == 0:  # 更新现有记录
-                for record in current_records:
-                    if not valid_ips:
-                        break
-                    new_ip = valid_ips.pop(0)["ip"]
-                    cloud.change_record(domain, record["recordId"], sub_domain, new_ip, RECORD_TYPE, line_name, TTL)
-                    logging.info(f"更新记录成功 {domain} {sub_domain} {line_name} -> {new_ip}")
-
-            elif create_num > 0:  # 创建新记录
-                for _ in range(create_num):
-                    if not valid_ips:
-                        break
-                    new_ip = valid_ips.pop(0)["ip"]
-                    cloud.create_record(domain, sub_domain, new_ip, RECORD_TYPE, line_name, TTL)
-                    logging.info(f"创建记录成功 {domain} {sub_domain} {line_name} -> {new_ip}")
-
-            else:  # 删除多余记录
-                for record in current_records[:abs(create_num)]:
+            if DNS_SERVER in ["3", "3.1"]:  # 华为云处理逻辑
+                if current_records:
+                    # 更新现有记录，使用逗号分隔的多个IP
+                    record_id = current_records[0]["recordId"]
+                    new_ip_value = ",".join(new_ips)
+                    cloud.change_record(domain, record_id, sub_domain, new_ip_value, RECORD_TYPE, line_name, TTL)
+                    logging.info(f"更新记录成功 {domain} {sub_domain} {line_name} -> {new_ip_value}")
+                else:
+                    # 创建新记录，使用逗号分隔的多个IP
+                    new_ip_value = ",".join(new_ips)
+                    cloud.create_record(domain, sub_domain, new_ip_value, RECORD_TYPE, line_name, TTL)
+                    logging.info(f"创建记录成功 {domain} {sub_domain} {line_name} -> {new_ip_value}")
+                
+                # 删除多余的记录（如果存在）
+                for record in current_records[1:]:
                     cloud.del_record(domain, record["recordId"])
                     logging.info(f"删除多余记录 {domain} {sub_domain} {line_name}")
+            else:
+                # 其他DNS服务商的原有处理逻辑
+                existing_num = len(current_records)
+                create_num = AFFECT_NUM - existing_num
+
+                if create_num == 0:  # 更新现有记录
+                    for record, new_ip in zip(current_records, new_ips):
+                        cloud.change_record(domain, record["recordId"], sub_domain, new_ip, RECORD_TYPE, line_name, TTL)
+                        logging.info(f"更新记录成功 {domain} {sub_domain} {line_name} -> {new_ip}")
+
+                elif create_num > 0:  # 创建新记录
+                    for new_ip in new_ips[existing_num:]:
+                        cloud.create_record(domain, sub_domain, new_ip, RECORD_TYPE, line_name, TTL)
+                        logging.info(f"创建记录成功 {domain} {sub_domain} {line_name} -> {new_ip}")
+
+                else:  # 删除多余记录
+                    for record in current_records[:abs(create_num)]:
+                        cloud.del_record(domain, record["recordId"])
+                        logging.info(f"删除多余记录 {domain} {sub_domain} {line_name}")
 
         except Exception as e:
             logging.error(f"记录操作失败: {str(e)}")
