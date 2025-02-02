@@ -47,7 +47,16 @@ RECORD_TYPE = sys.argv[1] if len(sys.argv) >= 2 else "A"  # 记录类型 A/AAAA
 REGION_HW = os.getenv("REGION_HW", "cn-east-3")
 
 # API 配置
-API = 'https://api.vvhan.com/tool/cf_ip'
+API_1 = 'https://api.hostmonit.com/get_optimization_ip'
+API_2 = 'https://api.345673.xyz/get_data'
+API_3 = 'https://www.wetest.vip/api/cf2dns/get_cloudflare_ip'
+API_4 = 'https://api.vvhan.com/tool/cf_ip'
+
+# 根据记录类型选择 API
+if RECORD_TYPE == "A":
+    API = API_4  # 默认使用 vvhan API
+else:
+    API = API_3  # AAAA 记录使用 wetest API
 
 def parse_custom_ips(ip_str):
     return [{"ip": ip.strip()} for ip in ip_str.split(',') if ip.strip()]
@@ -66,59 +75,71 @@ self_def_cfips_list = parse_custom_ips(self_def_cfips)
 def get_optimization_ip():
     """获取优化后的 IP 地址"""
     try:
-        response = requests.get(API, timeout=10)
+        if API in [API_1, API_2]:  # hostmonit 和 345673 API
+            headers = {'Content-Type': 'application/json'}
+            data = {"key": KEY, "type": "v4" if RECORD_TYPE == "A" else "v6"}
+            response = requests.post(API, json=data, headers=headers, timeout=10)
+        else:  # wetest 和 vvhan API
+            response = requests.get(API, timeout=10)
+            
         response.raise_for_status()
         result = response.json()
         
-        if not result.get("success") or "data" not in result:
-            logging.error(f"API 返回异常数据: {json.dumps(result)}")
-            return None
+        if API == API_4:  # vvhan API
+            if not result.get("success") or "data" not in result:
+                logging.error(f"API 返回异常数据: {json.dumps(result)}")
+                return None
+                
+            ip_data = result["data"]["v4" if RECORD_TYPE == "A" else "v6"]
             
-        ip_data = result["data"]["v4" if RECORD_TYPE == "A" else "v6"]
-        current_time = int(time.time())
-        
-        # 为每个运营商选择延迟最低的IP
-        formatted_result = {
-            "code": 200,
-            "info": {}
-        }
-        
-        for isp in ["CM", "CU", "CT"]:
-            if isp in ip_data and ip_data[isp]:
-                # 过滤20分钟内更新的IP，并按延迟排序
-                valid_ips = [
-                    ip for ip in ip_data[isp]
-                    if current_time - int(ip.get("time", 0)) <= 1200  # 20分钟 = 1200秒
-                ]
-                
-                if not valid_ips:
-                    logging.warning(f"{isp} 线路没有20分钟内更新的IP")
-                    continue
+            # 为每个运营商选择延迟最低的IP
+            formatted_result = {
+                "code": 200,
+                "info": {}
+            }
+            
+            for isp in ["CM", "CU", "CT"]:
+                if isp in ip_data and ip_data[isp]:
+                    # 过滤20分钟内更新的IP，使用uptime判断，并按延迟排序
+                    valid_ips = [
+                        ip for ip in ip_data[isp]
+                        if int(ip.get("uptime", 0)) <= 1200  # 20分钟 = 1200秒
+                    ]
                     
-                # 按延迟排序，选择延迟最低的IP
-                sorted_ips = sorted(valid_ips, key=lambda x: x.get("latency", float('inf')))
-                # 取延迟最低的前 AFFECT_NUM 个IP
-                best_ips = sorted_ips[:AFFECT_NUM]
-                formatted_result["info"][isp] = [{"ip": ip["ip"]} for ip in best_ips]
+                    if not valid_ips:
+                        logging.warning(f"{isp} 线路没有20分钟内更新的IP")
+                        continue
+                        
+                    # 按延迟排序，选择延迟最低的IP
+                    sorted_ips = sorted(valid_ips, key=lambda x: x.get("latency", float('inf')))
+                    # 取延迟最低的前 AFFECT_NUM 个IP
+                    best_ips = sorted_ips[:AFFECT_NUM]
+                    formatted_result["info"][isp] = [{"ip": ip["ip"]} for ip in best_ips]
+                    
+                    # 记录选中IP的更新时间和延迟
+                    for ip in best_ips:
+                        uptime_minutes = int(ip.get("uptime", 0)) // 60
+                        logging.info(f"{isp} 线路选中IP: {ip['ip']}, "
+                                   f"更新时间: {uptime_minutes}分钟前, "
+                                   f"延迟: {ip.get('latency', 'unknown')}ms")
+            
+            # 默认线路使用移动线路的IP
+            if "CM" in formatted_result["info"]:
+                formatted_result["info"]["DEF"] = formatted_result["info"]["CM"]
+            elif formatted_result["info"]:
+                # 如果没有移动线路，使用其他可用线路的IP
+                first_available = next(iter(formatted_result["info"].values()))
+                formatted_result["info"]["DEF"] = first_available
+                logging.info("默认线路使用其他可用线路的IP")
+            
+            return formatted_result
+            
+        else:  # 其他 API
+            if result.get("code") != 200 or "info" not in result:
+                logging.error(f"API 返回异常数据: {json.dumps(result)}")
+                return None
                 
-                # 记录选中IP的更新时间和延迟
-                for ip in best_ips:
-                    update_time = time.strftime("%Y-%m-%d %H:%M:%S", 
-                                              time.localtime(int(ip.get("time", 0))))
-                    logging.info(f"{isp} 线路选中IP: {ip['ip']}, "
-                               f"更新时间: {update_time}, "
-                               f"延迟: {ip.get('latency', 'unknown')}ms")
-        
-        # 默认线路使用移动线路的IP
-        if "CM" in formatted_result["info"]:
-            formatted_result["info"]["DEF"] = formatted_result["info"]["CM"]
-        elif formatted_result["info"]:
-            # 如果没有移动线路，使用其他可用线路的IP
-            first_available = next(iter(formatted_result["info"].values()))
-            formatted_result["info"]["DEF"] = first_available
-            logging.info("默认线路使用其他可用线路的IP")
-        
-        return formatted_result
+            return result
             
     except requests.exceptions.RequestException as e:
         logging.error(f"请求优化 IP API 失败: {str(e)}")
