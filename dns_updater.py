@@ -75,6 +75,7 @@ def get_optimization_ip():
             return None
             
         ip_data = result["data"]["v4" if RECORD_TYPE == "A" else "v6"]
+        current_time = int(time.time())
         
         # 为每个运营商选择延迟最低的IP
         formatted_result = {
@@ -84,15 +85,38 @@ def get_optimization_ip():
         
         for isp in ["CM", "CU", "CT"]:
             if isp in ip_data and ip_data[isp]:
+                # 过滤20分钟内更新的IP，并按延迟排序
+                valid_ips = [
+                    ip for ip in ip_data[isp]
+                    if current_time - int(ip.get("time", 0)) <= 1200  # 20分钟 = 1200秒
+                ]
+                
+                if not valid_ips:
+                    logging.warning(f"{isp} 线路没有20分钟内更新的IP")
+                    continue
+                    
                 # 按延迟排序，选择延迟最低的IP
-                sorted_ips = sorted(ip_data[isp], key=lambda x: x.get("latency", float('inf')))
+                sorted_ips = sorted(valid_ips, key=lambda x: x.get("latency", float('inf')))
                 # 取延迟最低的前 AFFECT_NUM 个IP
                 best_ips = sorted_ips[:AFFECT_NUM]
                 formatted_result["info"][isp] = [{"ip": ip["ip"]} for ip in best_ips]
+                
+                # 记录选中IP的更新时间和延迟
+                for ip in best_ips:
+                    update_time = time.strftime("%Y-%m-%d %H:%M:%S", 
+                                              time.localtime(int(ip.get("time", 0))))
+                    logging.info(f"{isp} 线路选中IP: {ip['ip']}, "
+                               f"更新时间: {update_time}, "
+                               f"延迟: {ip.get('latency', 'unknown')}ms")
         
         # 默认线路使用移动线路的IP
         if "CM" in formatted_result["info"]:
             formatted_result["info"]["DEF"] = formatted_result["info"]["CM"]
+        elif formatted_result["info"]:
+            # 如果没有移动线路，使用其他可用线路的IP
+            first_available = next(iter(formatted_result["info"].values()))
+            formatted_result["info"]["DEF"] = first_available
+            logging.info("默认线路使用其他可用线路的IP")
         
         return formatted_result
             
