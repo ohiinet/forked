@@ -54,7 +54,7 @@ API_4 = 'https://api.vvhan.com/tool/cf_ip'
 
 # 根据记录类型选择 API
 if RECORD_TYPE == "A":
-    API = API_3  # 默认使用 vvhan API
+    API = API_4  # 默认使用 vvhan API
 else:
     API = API_3  # AAAA 记录使用 wetest API
 
@@ -93,7 +93,37 @@ def get_optimization_ip():
         response.raise_for_status()
         result = response.json()
         
-        if API == API_4:  # vvhan API
+        if API == API_3:  # wetest API
+            if result.get("code") != 200 or "info" not in result:
+                logging.error(f"API 返回异常数据: {json.dumps(result)}")
+                return None
+                
+            # 特别处理 wetest API 的 IPv6 数据
+            if RECORD_TYPE == "AAAA":
+                formatted_result = {
+                    "code": 200,
+                    "info": {}
+                }
+                
+                # wetest API 返回的是单个运营商的数据
+                ipv6_list = []
+                for item in result["info"]:
+                    if ":" in item.get("ip", ""):  # 验证是否为 IPv6 地址
+                        ipv6_list.append({"ip": item["ip"]})
+                
+                if not ipv6_list:
+                    logging.error("没有找到有效的 IPv6 地址")
+                    return None
+                
+                # 为所有运营商使用相同的 IPv6 地址
+                for isp in ["CM", "CU", "CT", "DEF"]:
+                    formatted_result["info"][isp] = ipv6_list[:AFFECT_NUM]
+                
+                return formatted_result
+            
+            return result
+            
+        elif API == API_4:  # vvhan API
             if not result.get("success") or "data" not in result:
                 logging.error(f"API 返回异常数据: {json.dumps(result)}")
                 return None
