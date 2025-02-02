@@ -72,121 +72,69 @@ self_cu_cfips_list = parse_custom_ips(self_cu_cfips)
 self_ct_cfips_list = parse_custom_ips(self_ct_cfips)
 self_def_cfips_list = parse_custom_ips(self_def_cfips)
 
+def mask_domain(domain):
+    """隐藏域名信息，只显示首尾字符"""
+    if not domain:
+        return "***"
+    if len(domain) <= 2:
+        return "*" * len(domain)
+    return f"{domain[0]}***{domain[-1]}"
+
 def get_optimization_ip():
     """获取优化后的 IP 地址"""
     try:
-        # 如果是 AAAA 记录，使用 wetest API
-        if RECORD_TYPE == "AAAA":
-            API = API_3  # 切换到 wetest API 获取 IPv6 地址
-            response = requests.get(API, timeout=10)
-        else:
+        if API in [API_1, API_2]:  # hostmonit 和 345673 API
+            headers = {'Content-Type': 'application/json'}
+            data = {"key": KEY, "type": "v4" if RECORD_TYPE == "A" else "v6"}
+            response = requests.post(API, json=data, headers=headers, timeout=10)
+        else:  # wetest 和 vvhan API
             response = requests.get(API, timeout=10)
             
         response.raise_for_status()
         result = response.json()
         
-        # 针对不同 API 的响应格式处理
-        if API == API_3:  # wetest API
+        if API == API_4:  # vvhan API
+            if not result.get("success") or "data" not in result:
+                logging.error(f"API 返回异常数据: {json.dumps(result)}")
+                return None
+                
+            ip_data = result["data"]["v4" if RECORD_TYPE == "A" else "v6"]
+            
+            # 为每个运营商选择延迟最低的IP
+            formatted_result = {
+                "code": 200,
+                "info": {}
+            }
+            
+            for isp in ["CM", "CU", "CT"]:
+                if isp in ip_data and ip_data[isp]:
+                    # 按延迟排序，选择延迟最低的IP
+                    sorted_ips = sorted(ip_data[isp], key=lambda x: x.get("latency", float('inf')))
+                    # 取延迟最低的前 AFFECT_NUM 个IP
+                    best_ips = sorted_ips[:AFFECT_NUM]
+                    formatted_result["info"][isp] = [{"ip": ip["ip"]} for ip in best_ips]
+                    
+                    # 记录选中IP的延迟
+                    for ip in best_ips:
+                        logging.info(f"{isp} 线路选中IP: {ip['ip']}, "
+                                   f"延迟: {ip.get('latency', 'unknown')}ms")
+            
+            # 默认线路使用移动线路的IP
+            if "CM" in formatted_result["info"]:
+                formatted_result["info"]["DEF"] = formatted_result["info"]["CM"]
+            elif formatted_result["info"]:
+                first_available = next(iter(formatted_result["info"].values()))
+                formatted_result["info"]["DEF"] = first_available
+                logging.info("默认线路使用其他可用线路的IP")
+            
+            return formatted_result
+            
+        else:  # 其他 API
             if result.get("code") != 200 or "info" not in result:
                 logging.error(f"API 返回异常数据: {json.dumps(result)}")
                 return None
+                
             return result
-            
-        # vvhan API 处理
-        if not result.get("success") and not result.get("status"):
-            logging.error(f"API 返回异常数据: {json.dumps(result)}")
-            return None
-            
-        # 处理 vvhan API 的数据格式
-        if "data" in result and isinstance(result["data"], dict):
-            ip_data = result["data"].get("v4", {})  # 只处理 IPv4 数据
-        elif "info" in result and isinstance(result["info"], dict):
-            ip_data = result["info"]  # 直接使用 info 字段
-        else:
-            logging.error("API 返回数据格式不正确")
-            return None
-            
-        current_time = time.time()
-        
-        # 为每个运营商选择延迟最低的IP
-        formatted_result = {
-            "code": 200,
-            "info": {}
-        }
-        
-        for isp in ["CM", "CU", "CT"]:
-            if isp in ip_data and ip_data[isp]:
-                # 过滤IP，使用uptime或time字段判断
-                valid_ips = []
-                for ip in ip_data[isp]:
-                    try:
-                        # 检查是否有uptime字段
-                        if "uptime" in ip:
-                            time_diff = current_time - int(ip["uptime"])
-                        else:
-                            # 尝试使用time字段
-                            ip_time_str = ip.get("time")
-                            if ip_time_str:
-                                ip_time = time.strptime(ip_time_str, "%Y-%m-%d %H:%M:%S")
-                                time_diff = current_time - time.mktime(ip_time)
-                            else:
-                                # 如果没有时间信息，假设是最新的数据
-                                time_diff = 0
-                                
-                        if time_diff <= 1200:  # 20分钟 = 1200秒
-                            ip["time_diff"] = time_diff
-                            valid_ips.append(ip)
-                    except (ValueError, TypeError) as e:
-                        logging.debug(f"时间处理失败: {ip.get('ip')} - {str(e)}")
-                        # 时间处理失败时也保留该IP
-                        ip["time_diff"] = 0
-                        valid_ips.append(ip)
-                
-                if not valid_ips:
-                    logging.warning(f"{isp} 线路没有可用的IP")
-                    continue
-                    
-                # 按延迟排序（优先使用delay字段，其次是latency字段）
-                sorted_ips = sorted(valid_ips, 
-                                 key=lambda x: x.get("delay", x.get("latency", float('inf'))))
-                best_ips = sorted_ips[:AFFECT_NUM]
-                
-                # 验证 IP 地址格式
-                valid_formatted_ips = []
-                for ip in best_ips:
-                    try:
-                        ip_addr = ip.get("ip", ip.get("address"))  # 尝试两个可能的字段名
-                        if not ip_addr:
-                            continue
-                            
-                        if RECORD_TYPE == "A" and ":" in ip_addr:
-                            logging.warning(f"跳过无效的 IPv4 地址: {ip_addr}")
-                            continue
-                        valid_formatted_ips.append({"ip": ip_addr})
-                    except Exception as e:
-                        logging.warning(f"IP 地址验证失败: {str(e)}")
-                        continue
-                
-                if valid_formatted_ips:
-                    formatted_result["info"][isp] = valid_formatted_ips
-                    # 记录选中IP的信息
-                    for ip in best_ips:
-                        ip_addr = ip.get("ip", ip.get("address"))
-                        delay = ip.get("delay", ip.get("latency", "unknown"))
-                        time_diff_minutes = int(ip.get("time_diff", 0)) // 60
-                        logging.info(f"{isp} 线路选中IP: {ip_addr}, "
-                                   f"延迟: {delay}ms, "
-                                   f"更新时间: {time_diff_minutes}分钟前")
-        
-        # 默认线路处理
-        if "CM" in formatted_result["info"]:
-            formatted_result["info"]["DEF"] = formatted_result["info"]["CM"]
-        elif formatted_result["info"]:
-            first_available = next(iter(formatted_result["info"].values()))
-            formatted_result["info"]["DEF"] = first_available
-            logging.info("默认线路使用其他可用线路的IP")
-        
-        return formatted_result
             
     except requests.exceptions.RequestException as e:
         logging.error(f"请求优化 IP API 失败: {str(e)}")
@@ -200,14 +148,6 @@ def get_optimization_ip():
 def validate_ips(ip_list):
     """验证 IP 列表有效性"""
     return [ip for ip in ip_list if isinstance(ip, dict) and "ip" in ip]
-
-def mask_domain(domain):
-    """隐藏域名信息，只显示首尾字符"""
-    if not domain:
-        return "***"
-    if len(domain) <= 2:
-        return "*" * len(domain)
-    return f"{domain[0]}***{domain[-1]}"
 
 def handle_dns_records(cloud, domain, sub_domain, line_config):
     """处理 DNS 记录的核心逻辑"""
@@ -232,7 +172,7 @@ def handle_dns_records(cloud, domain, sub_domain, line_config):
         try:
             records = cloud.get_record(domain, 100, sub_domain, RECORD_TYPE)
         except Exception as e:
-            logging.error(f"获取记录失败: {masked_subdomain}.{masked_domain}")
+            logging.error(f"获取记录失败: {str(e)}")
             continue
 
         # 过滤当前线路记录
