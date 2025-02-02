@@ -62,14 +62,14 @@ if RECORD_TYPE == "A":
     API = API_3
     self_cm_cfips = ""
     self_cu_cfips = ""
-    self_ct_cfips = "104.19.37.227, 8.20.125.2, 104.19.138.18"
+    self_ct_cfips = ""
     self_def_cfips = ""
 else:
     API = API_3
     self_cm_cfips = ""
     self_cu_cfips = ""
     self_ct_cfips = ""
-    self_def_cfips = "2606:4700:91b8::, 2a06:98c1:56::"
+    self_def_cfips = ""
 
 self_cm_cfips_list = parse_custom_ips(self_cm_cfips)
 self_cu_cfips_list = parse_custom_ips(self_cu_cfips)
@@ -212,7 +212,7 @@ def main():
 
     try:
         if DNS_SERVER == "3.1":
-            cloud = provider_class(SECRETID, SECRETKEY, REGION_HW, is_collection=True)
+            cloud = provider_class(SECRETID, SECRETKEY, REGION_HW)
         elif DNS_SERVER == "2":
             cloud = provider_class(SECRETID, SECRETKEY, REGION_ALI)
         else:
