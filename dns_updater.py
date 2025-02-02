@@ -41,10 +41,11 @@ except json.JSONDecodeError as e:
     sys.exit(1)
 
 # 其他配置
-AFFECT_NUM = 1  # 默认影响记录数
+AFFECT_NUM = 3  # 默认影响记录数
 DNS_SERVER = os.getenv("DNS_SERVER", "3.1")  # 使用字符串标识服务商
 TTL = int(os.getenv("TTL", 300))  # 默认 TTL 600 秒
 RECORD_TYPE = sys.argv[1] if len(sys.argv) >= 2 else "A"  # 记录类型 A/AAAA
+REGION_HW = 'cn-east-3'
 
 # API 配置
 API_1 = 'https://api.hostmonit.com/get_optimization_ip'
