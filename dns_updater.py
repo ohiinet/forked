@@ -48,12 +48,12 @@ REGION_HW = os.getenv("REGION_HW", "cn-east-3")
 
 # API 配置
 API_1 = 'https://api.hostmonit.com/get_optimization_ip'
-API_2 = 'https://api.345673.xyz/get_data'
+API_2 = 'https://ip.164746.xyz/'
 API_3 = 'https://www.wetest.vip/api/cf2dns/get_cloudflare_ip'
 API_4 = 'https://api.vvhan.com/tool/cf_ip'
 
 # 根据记录类型选择 API
-API = API_4  # 默认使用 vvhan API
+API = API_3 # 默认使用 vvhan API
 
 def parse_custom_ips(ip_str):
     return [{"ip": ip.strip()} for ip in ip_str.split(',') if ip.strip()]
