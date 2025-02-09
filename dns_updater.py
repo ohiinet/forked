@@ -53,7 +53,7 @@ API_3 = 'https://www.wetest.vip/api/cf2dns/get_cloudflare_ip'
 API_4 = 'https://api.vvhan.com/tool/cf_ip'
 
 # 根据记录类型选择 API
-API = API_3 # 默认使用 vvhan API
+API = API_4 # 默认使用 vvhan API
 
 def parse_custom_ips(ip_str):
     return [{"ip": ip.strip()} for ip in ip_str.split(',') if ip.strip()]
