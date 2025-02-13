@@ -352,6 +352,124 @@ def handle_dns_records(cloud, domain, sub_domain, line_config):
             logging.error(f"记录操作失败: {str(e)}")
             logging.debug(traceback.format_exc())
 
+class Config:
+    """配置管理类"""
+    # API 配置
+    API_ENDPOINTS = {
+        'hostmonit': 'https://api.hostmonit.com/get_optimization_ip',
+        '345673': 'https://ip.164746.xyz/',
+        'wetest': 'https://www.wetest.vip/api/cf2dns/get_cloudflare_ip',
+        'vvhan': 'https://api.vvhan.com/tool/cf_ip'
+    }
+    
+    # 运营商配置
+    ISP_CONFIG = {
+        "CM": ("移动", "self_cm_cfips"),
+        "CU": ("联通", "self_cu_cfips"),
+        "CT": ("电信", "self_ct_cfips"),
+        "DEF": ("默认", "self_def_cfips")
+    }
+    
+    def __init__(self):
+        # 从环境变量和命令行参数加载配置
+        self.AFFECT_NUM = 3
+        self.DNS_SERVER = os.getenv("DNS_SERVER", "3.1")
+        self.TTL = int(os.getenv("TTL", 300))
+        self.RECORD_TYPE = sys.argv[1] if len(sys.argv) >= 2 else "A"
+        self.REGION_HW = os.getenv("REGION_HW", "cn-east-3")
+        self.API = self.API_ENDPOINTS['vvhan']  # 默认使用 vvhan API
+        
+        # 加载自定义IP配置
+        self.self_cm_cfips = ""
+        self.self_cu_cfips = ""
+        self.self_ct_cfips = ""
+        self.self_def_cfips = ""
+
+class IPManager:
+    """IP管理类"""
+    def __init__(self, config):
+        self.config = config
+        self._custom_ips = {}
+        self.load_custom_ips()
+    
+    def load_custom_ips(self):
+        """加载自定义IP配置"""
+        for isp_code, (_, ip_var) in Config.ISP_CONFIG.items():
+            ip_str = getattr(self.config, ip_var, "")
+            self._custom_ips[isp_code] = parse_custom_ips(ip_str)
+    
+    def get_valid_ips(self, isp_code, api_ips=None):
+        """获取有效的IP列表"""
+        custom_ips = self._custom_ips.get(isp_code, [])
+        if api_ips:
+            return validate_ips(api_ips[:self.config.AFFECT_NUM] + custom_ips)
+        return validate_ips(custom_ips)
+
+class DNSManager:
+    """DNS记录管理类"""
+    def __init__(self, cloud, config, ip_manager):
+        self.cloud = cloud
+        self.config = config
+        self.ip_manager = ip_manager
+    
+    def update_records(self, domain, sub_domain, line_config):
+        """更新DNS记录"""
+        masked_domain = mask_domain(domain)
+        masked_subdomain = mask_domain(sub_domain)
+        
+        for line_code in line_config:
+            line_name, custom_ips = Config.ISP_CONFIG.get(line_code, (None, None))
+            if not line_name:
+                logging.warning(f"跳过无效线路配置: {line_code}")
+                continue
+                
+            try:
+                self._handle_single_line(domain, sub_domain, line_code, line_name)
+            except Exception as e:
+                logging.error(f"{masked_subdomain}.{masked_domain} {line_code}: {str(e)}")
+    
+    def _handle_single_line(self, domain, sub_domain, line_code, line_name):
+        """处理单个线路的DNS记录"""
+        # 获取现有记录
+        records = self.cloud.get_record(domain, 100, sub_domain, self.config.RECORD_TYPE)
+        current_records = [
+            {"recordId": r["id"], "value": r["value"]}
+            for r in records.get("data", {}).get("records", [])
+            if r.get("line") == line_name
+        ]
+
+        # 获取优化IP
+        api_result = get_optimization_ip()
+        if api_result:
+            optimized_ips = api_result["info"].get(line_code, [])
+        else:
+            optimized_ips = []
+
+        # 获取有效IP
+        valid_ips = self.ip_manager.get_valid_ips(line_code, optimized_ips)
+        if not valid_ips:
+            raise ValueError(f"{line_code} 线路无有效 IP")
+
+        # 提取IP地址
+        new_ips = [ip["ip"] for ip in valid_ips[:self.config.AFFECT_NUM]]
+        
+        # 更新记录
+        if current_records:
+            record_id = current_records[0]["recordId"]
+            self.cloud.change_record(
+                domain, record_id, sub_domain, new_ips,
+                self.config.RECORD_TYPE, line_name, self.config.TTL
+            )
+        else:
+            self.cloud.create_record(
+                domain, sub_domain, new_ips,
+                self.config.RECORD_TYPE, line_name, self.config.TTL
+            )
+
+        # 删除多余记录
+        for record in current_records[1:]:
+            self.cloud.del_record(domain, record["recordId"])
+
 def main():
     """主函数"""
     try:
