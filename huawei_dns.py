@@ -1,7 +1,5 @@
 # Mail: tongdongdong@outlook.com
 import sys
-import random
-import time
 import json
 import requests
 import os
@@ -144,13 +142,28 @@ RECORD_TYPE = sys.argv[1] if len(sys.argv) >= 2 else "A"  # 记录类型 A/AAAA
 REGION_HW = os.getenv("REGION_HW", "cn-east-3")
 
 # API 配置
-API_1 = 'https://api.hostmonit.com/get_optimization_ip'
-API_2 = 'https://ip.164746.xyz/'
-API_3 = 'https://www.wetest.vip/api/cf2dns/get_cloudflare_ip'
-API_4 = 'https://api.vvhan.com/tool/cf_ip'
-
-# 根据记录类型选择 API
-API = API_4 # 默认使用 vvhan API
+API_LIST = [
+    {
+        'url': 'https://api.vvhan.com/tool/cf_ip',
+        'name': 'vvhan',
+        'id': 1  # API序号
+    },
+    {
+        'url': 'https://api.hostmonit.com/get_optimization_ip',
+        'name': 'hostmonit',
+        'id': 2
+    },
+    {
+        'url': 'https://ip.164746.xyz/',
+        'name': '164746',
+        'id': 3
+    },
+    {
+        'url': 'https://www.wetest.vip/api/cf2dns/get_cloudflare_ip',
+        'name': 'wetest',
+        'id': 4
+    }
+]
 
 # 添加全局缓存变量
 _cached_ip_data = {
@@ -180,8 +193,46 @@ def mask_domain(domain):
         return "*" * len(domain)
     return f"{domain[0]}***{domain[-1]}"
 
+def get_api_priority():
+    """从环境变量获取API优先级配置"""
+    priority_str = os.getenv("API_PRIORITY", "")
+    if not priority_str:
+        return API_LIST  # 如果没有配置，使用默认优先级
+    
+    try:
+        # 环境变量格式示例: "2,1,4,3" 表示 hostmonit -> vvhan -> wetest -> 164746
+        priority_list = [int(x.strip()) for x in priority_str.split(',') if x.strip().isdigit()]
+        
+        # 创建API ID到API的映射
+        api_map = {api['id']: api for api in API_LIST}
+        
+        # 根据优先级序号重新排序API列表
+        sorted_apis = []
+        for priority in priority_list:
+            if priority in api_map:
+                api = api_map[priority].copy()
+                api['priority'] = len(sorted_apis) + 1  # 设置新的优先级
+                sorted_apis.append(api)
+        
+        # 添加未在优先级列表中的API
+        remaining_apis = [api for api in API_LIST if api['id'] not in priority_list]
+        for api in remaining_apis:
+            api_copy = api.copy()
+            api_copy['priority'] = len(sorted_apis) + 1
+            sorted_apis.append(api_copy)
+        
+        if not sorted_apis:
+            logging.warning("无有效的API优先级配置，使用默认顺序")
+            return API_LIST
+            
+        return sorted_apis
+        
+    except Exception as e:
+        logging.warning(f"API优先级配置解析失败: {str(e)}，使用默认顺序")
+        return API_LIST
+
 def get_optimization_ip():
-    """获取优化后的 IP 地址，支持缓存"""
+    """获取优化后的 IP 地址，支持缓存和API故障转移"""
     global _cached_ip_data
     record_type = RECORD_TYPE
     
@@ -190,64 +241,80 @@ def get_optimization_ip():
         return _cached_ip_data["ipv4"]
     elif record_type == "AAAA" and _cached_ip_data["ipv6"]:
         return _cached_ip_data["ipv6"]
-        
-    try:
-        if API == API_4:  # vvhan API
-            response = requests.get(API, timeout=10)
+    
+    # 获取排序后的API列表
+    sorted_apis = get_api_priority()
+    
+    # 遍历所有API尝试获取数据
+    for api in sorted_apis:
+        try:
+            api_id = api['id']
+            api_priority = api.get('priority', api_id)
+            logging.info(f"尝试从 {api['name']} (ID: {api_id}, 优先级: {api_priority}) 获取IP数据")
+            
+            response = requests.get(api['url'], timeout=10)
             response.raise_for_status()
             result = response.json()
             
-            if not result.get("success") or "data" not in result:
-                logging.error(f"API 返回异常数据: {json.dumps(result)}")
-                return None
-            
-            # 处理 IPv4 数据
-            ipv4_data = result["data"].get("v4", {})
-            ipv4_result = {
-                "code": 200,
-                "info": {}
-            }
-            
-            # 处理 IPv6 数据
-            ipv6_data = result["data"].get("v6", {})
-            ipv6_result = {
-                "code": 200,
-                "info": {}  # 不再使用 ipv6_info
-            }
-            
-            # 处理 IPv4 数据
-            for line_code in ["CM", "CU", "CT"]:
-                if line_code in ipv4_data:
-                    ips = sorted(ipv4_data[line_code], key=lambda x: x.get("latency", float('inf')))
-                    ipv4_result["info"][line_code] = [{"ip": ip["ip"]} for ip in ips[:AFFECT_NUM]]
-            
-            # 处理 IPv6 数据
-            if ipv6_data:
-                all_v6_ips = []
-                seen_ips = set()
-                for isp_ips in ipv6_data.values():
-                    for ip in isp_ips:
-                        if ip["ip"] not in seen_ips:
-                            seen_ips.add(ip["ip"])
-                            all_v6_ips.append(ip)
+            if api['name'] == 'vvhan':  # vvhan API处理逻辑
+                if not result.get("success") or "data" not in result:
+                    logging.warning(f"{api['name']} API 返回异常数据: {json.dumps(result)}")
+                    continue
                 
-                sorted_v6_ips = sorted(all_v6_ips, key=lambda x: x.get("latency", float('inf')))
-                ipv6_result["info"]["DEF"] = [{"ip": ip["ip"]} for ip in sorted_v6_ips[:AFFECT_NUM]]
-                logging.info(f"获取到 IPv6 地址: {[ip['ip'] for ip in sorted_v6_ips[:AFFECT_NUM]]}")
+                # 处理 IPv4 数据
+                ipv4_data = result["data"].get("v4", {})
+                ipv4_result = {
+                    "code": 200,
+                    "info": {}
+                }
+                
+                # 处理 IPv6 数据
+                ipv6_data = result["data"].get("v6", {})
+                ipv6_result = {
+                    "code": 200,
+                    "info": {}
+                }
+                
+                # 处理 IPv4 数据
+                for line_code in ["CM", "CU", "CT"]:
+                    if line_code in ipv4_data:
+                        ips = sorted(ipv4_data[line_code], key=lambda x: x.get("latency", float('inf')))
+                        ipv4_result["info"][line_code] = [{"ip": ip["ip"]} for ip in ips[:AFFECT_NUM]]
+                
+                # 处理 IPv6 数据
+                if ipv6_data:
+                    all_v6_ips = []
+                    seen_ips = set()
+                    for isp_ips in ipv6_data.values():
+                        for ip in isp_ips:
+                            if ip["ip"] not in seen_ips:
+                                seen_ips.add(ip["ip"])
+                                all_v6_ips.append(ip)
+                    
+                    sorted_v6_ips = sorted(all_v6_ips, key=lambda x: x.get("latency", float('inf')))
+                    ipv6_result["info"]["DEF"] = [{"ip": ip["ip"]} for ip in sorted_v6_ips[:AFFECT_NUM]]
+                
+                # 缓存结果
+                _cached_ip_data["ipv4"] = ipv4_result
+                _cached_ip_data["ipv6"] = ipv6_result
+                
+                # 根据请求类型返回对应结果
+                return _cached_ip_data["ipv6"] if record_type == "AAAA" else _cached_ip_data["ipv4"]
             
-            # 缓存结果
-            _cached_ip_data["ipv4"] = ipv4_result
-            _cached_ip_data["ipv6"] = ipv6_result
+            # TODO: 这里可以添加其他API的处理逻辑
             
-            # 根据请求类型返回对应结果
-            return _cached_ip_data["ipv6"] if record_type == "AAAA" else _cached_ip_data["ipv4"]
-            
-    except requests.exceptions.RequestException as e:
-        logging.error(f"请求优化 IP API 失败: {str(e)}")
-    except Exception as e:
-        logging.error(f"获取优化 IP 异常: {str(e)}")
-        logging.debug(traceback.format_exc())
-    return None
+        except requests.exceptions.RequestException as e:
+            logging.error(f"{api['name']} API请求失败: {str(e)}")
+            continue
+        except Exception as e:
+            logging.error(f"{api['name']} API处理异常: {str(e)}")
+            logging.debug(traceback.format_exc())
+            continue
+    
+    # 所有API都失败时抛出异常
+    error_msg = "所有API都无法获取IP数据"
+    logging.error(error_msg)
+    raise RuntimeError(error_msg)
 
 def validate_ips(ips):
     """验证并去重 IP 列表"""
@@ -505,6 +572,9 @@ def main():
                     
                 dns_manager.update_records(domain, sub_domain, lines)
                 
+    except RuntimeError as e:
+        logging.error(f"无法获取IP数据: {str(e)}")
+        sys.exit(1)
     except Exception as e:
         logging.error(f"程序执行失败: {str(e)}")
         logging.debug(traceback.format_exc())
