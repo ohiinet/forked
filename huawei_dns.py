@@ -232,21 +232,20 @@ def get_api_priority():
         return API_LIST
 
 def get_optimization_ip(line_config=None):
-    """
-    获取优化后的 IP 地址
-    line_config: 当前域名的线路配置列表，用于判断是否包含默认线路
-    """
+    """获取优化后的 IP 地址"""
     global _cached_ip_data
     record_type = RECORD_TYPE
     
-    # 如果已有对应类型的缓存数据，直接返回
-    if record_type == "A" and _cached_ip_data["ipv4"]:
-        return _cached_ip_data["ipv4"]
-    elif record_type == "AAAA" and _cached_ip_data["ipv6"]:
+    # IPv6 只从缓存获取数据
+    if record_type == "AAAA":
+        if not _cached_ip_data["ipv6"]:
+            # 如果缓存中没有 IPv6 数据，返回 None
+            return None
         return _cached_ip_data["ipv6"]
     
-    # 判断是否包含默认线路
-    has_default_line = line_config and "DEF" in line_config
+    # IPv4 处理逻辑
+    if _cached_ip_data["ipv4"]:
+        return _cached_ip_data["ipv4"]
     
     # 获取排序后的API列表
     sorted_apis = get_api_priority()
@@ -262,85 +261,63 @@ def get_optimization_ip(line_config=None):
             response.raise_for_status()
             result = response.json()
             
-            if api['name'] == 'vvhan':  # vvhan API处理逻辑
+            if api['name'] == 'vvhan':
                 if not result.get("success") or "data" not in result:
                     logging.warning(f"{api['name']} API 返回异常数据: {json.dumps(result)}")
                     continue
                 
-                data = result["data"].get("v4" if record_type == "A" else "v6", {})
-                api_result = {
-                    "code": 200,
-                    "info": {}
-                }
-                
-                if has_default_line:
-                    # 如果有默认线路，合并所有线路的 IP 并按延迟排序
-                    all_ips = []
-                    seen_ips = set()
-                    
-                    # 收集所有 IP 地址
-                    for isp_ips in data.values():
-                        for ip in isp_ips:
-                            if ip["ip"] not in seen_ips:
-                                seen_ips.add(ip["ip"])
-                                all_ips.append(ip)
-                    
-                    # 按延迟排序并获取最优 IP
-                    sorted_ips = sorted(all_ips, key=lambda x: x.get("latency", float('inf')))
-                    best_ips = [{"ip": ip["ip"]} for ip in sorted_ips[:AFFECT_NUM]]
-                    
-                    # 将最优 IP 设置为默认线路
-                    api_result["info"]["DEF"] = best_ips
-                    
-                    # 如果配置了其他线路，复用这些最优 IP
-                    for line_code in ["CM", "CU", "CT"]:
-                        if line_code in line_config:
-                            api_result["info"][line_code] = best_ips
-                else:
-                    # 常规处理：按线路分别获取最优 IP
-                    for line_code in ["CM", "CU", "CT"]:
-                        if line_code in data and line_code in line_config:
-                            ips = sorted(data[line_code], key=lambda x: x.get("latency", float('inf')))
-                            api_result["info"][line_code] = [{"ip": ip["ip"]} for ip in ips[:AFFECT_NUM]]
-                
-                # 缓存结果
-                if record_type == "A":
-                    _cached_ip_data["ipv4"] = api_result
-                else:
-                    _cached_ip_data["ipv6"] = api_result
-                
-                return api_result
+                # 只处理和缓存 IPv4 数据
+                ipv4_data = result["data"].get("v4", {})
+                _cached_ip_data["ipv4"] = process_ip_data(ipv4_data, "A")
+                return _cached_ip_data["ipv4"]
             
-            # TODO: 这里可以添加其他API的处理逻辑
-            
-        except requests.exceptions.RequestException as e:
-            logging.error(f"{api['name']} API请求失败: {str(e)}")
-            continue
         except Exception as e:
             logging.error(f"{api['name']} API处理异常: {str(e)}")
-            logging.debug(traceback.format_exc())
             continue
     
-    # 所有API都失败时抛出异常
     error_msg = "所有API都无法获取IP数据"
     logging.error(error_msg)
     raise RuntimeError(error_msg)
 
-def validate_ips(ips):
-    """验证并去重 IP 列表"""
-    if not ips:
-        return []
+def process_ip_data(data, record_type):
+    """处理IP数据，返回处理后的结果"""
+    result = {
+        "code": 200,
+        "info": {}
+    }
     
+    # 收集所有IP
+    all_ips = []
     seen_ips = set()
-    valid_ips = []
+    for isp_ips in data.values():
+        for ip in isp_ips:
+            if ip["ip"] not in seen_ips:
+                seen_ips.add(ip["ip"])
+                all_ips.append(ip)
     
-    for ip_info in ips:
-        ip = ip_info.get("ip")
-        if ip and ip not in seen_ips:
-            seen_ips.add(ip)
-            valid_ips.append(ip_info)
+    # 按延迟排序
+    sorted_ips = sorted(all_ips, key=lambda x: x.get("latency", float('inf')))
+    best_ips = [{"ip": ip["ip"]} for ip in sorted_ips[:AFFECT_NUM]]
     
-    return valid_ips[:AFFECT_NUM]
+    # 为每个运营商准备IP列表
+    for line_code in ["CM", "CU", "CT"]:
+        if line_code in data:
+            line_ips = sorted(data[line_code], key=lambda x: x.get("latency", float('inf')))
+            result["info"][line_code] = [{"ip": ip["ip"]} for ip in line_ips[:AFFECT_NUM]]
+    
+    # 添加默认线路的IP（使用全局最优IP）
+    result["info"]["DEF"] = best_ips
+    
+    return result
+
+def get_line_ips(api_result, line_code, has_default_line):
+    """根据线路配置获取对应的IP列表"""
+    if has_default_line:
+        # 如果配置了默认线路，所有线路都使用默认线路的IP
+        return api_result["info"].get("DEF", [])
+    else:
+        # 否则使用对应线路的IP
+        return api_result["info"].get(line_code, [])
 
 def handle_dns_records(cloud, domain, sub_domain, line_config):
     """处理 DNS 记录的核心逻辑"""
@@ -348,20 +325,16 @@ def handle_dns_records(cloud, domain, sub_domain, line_config):
     masked_subdomain = mask_domain(sub_domain)
     
     # 确保域名格式正确
-    domain = domain.rstrip('.')  # 移除末尾的点
+    domain = domain.rstrip('.')
     if sub_domain == '@':
         full_domain = domain
     else:
         full_domain = f"{sub_domain}.{domain}"
     
-    line_map = {
-        "CM": ("移动", self_cm_cfips_list),
-        "CU": ("联通", self_cu_cfips_list),
-        "CT": ("电信", self_ct_cfips_list),
-        "DEF": ("默认", self_def_cfips_list)
-    }
-
-    # 获取可用 IP（传入线路配置）
+    # 判断是否包含默认线路
+    has_default_line = "DEF" in line_config
+    
+    # 获取可用 IP（只请求一次）
     try:
         api_result = get_optimization_ip(line_config)
         if not api_result:
@@ -373,54 +346,64 @@ def handle_dns_records(cloud, domain, sub_domain, line_config):
 
     # 处理每个线路
     for line_code in line_config:
-        line_name, custom_ips = line_map.get(line_code, (None, None))
+        line_name = {
+            "CM": "移动",
+            "CU": "联通",
+            "CT": "电信",
+            "DEF": "默认"
+        }.get(line_code)
+        
         if not line_name:
             logging.warning(f"跳过无效线路配置: {line_code}")
             continue
 
-        # 获取现有记录
         try:
+            # 获取现有记录
             records = cloud.get_record(domain, 100, sub_domain, RECORD_TYPE)
-        except Exception as e:
-            logging.error(f"获取记录失败: {str(e)}")
-            continue
+            current_records = [
+                {"recordId": r["id"], "value": r["value"]}
+                for r in records.get("data", {}).get("records", [])
+                if r.get("line") == line_name
+            ]
 
-        # 过滤当前线路记录
-        current_records = [
-            {"recordId": r["id"], "value": r["value"]}
-            for r in records.get("data", {}).get("records", [])
-            if r.get("line") == line_name
-        ]
-
-        # 获取当前线路的 IP
-        optimized_ips = api_result["info"].get(line_code, []) + custom_ips
-        valid_ips = validate_ips(optimized_ips)
-        
-        if not valid_ips:
-            logging.error(f"{line_code} 线路无有效 IP")
-            continue
-
-        # 提取所有有效IP地址
-        new_ips = [ip["ip"] for ip in valid_ips]
-        
-        try:
-            if current_records:
-                # 更新现有记录
-                record_id = current_records[0]["recordId"]
-                cloud.change_record(domain, record_id, sub_domain, new_ips, RECORD_TYPE, line_name, TTL)
-                logging.info(f"更新记录成功 {masked_subdomain}.{masked_domain} {line_name} -> {new_ips}")
-            else:
-                # 创建新记录
-                cloud.create_record(domain, sub_domain, new_ips, RECORD_TYPE, line_name, TTL)
-                logging.info(f"创建记录成功 {masked_subdomain}.{masked_domain} {line_name} -> {new_ips}")
+            # 获取当前线路的IP
+            optimized_ips = get_line_ips(api_result, line_code, has_default_line)
             
-            # 删除多余记录
-            for record in current_records[1:]:
-                cloud.del_record(domain, record["recordId"])
-                logging.info(f"删除多余记录 {masked_subdomain}.{masked_domain} {line_name}")
+            if not optimized_ips:
+                logging.error(f"{line_code} 线路无有效 IP")
+                continue
+
+            # 提取IP地址
+            new_ips = [ip["ip"] for ip in optimized_ips]
+            
+            try:
+                if current_records:
+                    # 更新现有记录
+                    record_id = current_records[0]["recordId"]
+                    cloud.change_record(
+                        domain, record_id, sub_domain, new_ips,
+                        RECORD_TYPE, line_name, TTL
+                    )
+                    logging.info(f"更新记录成功 {masked_subdomain}.{masked_domain} {line_name} -> {new_ips}")
+                else:
+                    # 创建新记录
+                    cloud.create_record(
+                        domain, sub_domain, new_ips,
+                        RECORD_TYPE, line_name, TTL
+                    )
+                    logging.info(f"创建记录成功 {masked_subdomain}.{masked_domain} {line_name} -> {new_ips}")
+
+                # 删除多余记录
+                for record in current_records[1:]:
+                    cloud.del_record(domain, record["recordId"])
+                    logging.info(f"删除多余记录 {masked_subdomain}.{masked_domain} {line_name}")
+
+            except Exception as e:
+                logging.error(f"记录操作失败 {masked_subdomain}.{masked_domain} {line_name}: {str(e)}")
+                continue
 
         except Exception as e:
-            logging.error(f"记录操作失败 {masked_subdomain}.{masked_domain} {line_name}: {str(e)}")
+            logging.error(f"处理记录失败 {masked_subdomain}.{masked_domain} {line_name}: {str(e)}")
             continue
 
 class Config:
