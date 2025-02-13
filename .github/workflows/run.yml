@@ -35,7 +35,7 @@ jobs:
         TTL: "300"
         REGION_HW: "cn-east-3"
       run: |
-        python dns_updater.py A
+        python huawei_dns.py A
 
     - name: Run DNS Updater (IPv6)
       if: always()  # 可选是否运行
@@ -48,4 +48,4 @@ jobs:
         TTL: "300"
         REGION_HW: "cn-east-3"
       run: |
-        python dns_updater.py AAAA
+        python huawei_dns.py AAAA
