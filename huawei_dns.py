@@ -529,6 +529,11 @@ class DNSManager:
         masked_domain = mask_domain(domain)
         masked_subdomain = mask_domain(sub_domain)
         
+        # 如果是 IPv6，只处理默认线路
+        if self.config.RECORD_TYPE == "AAAA":
+            line_config = ["DEF"]
+            logging.info(f"{masked_subdomain}.{masked_domain}: IPv6模式，仅更新默认线路")
+        
         for line_code in line_config:
             line_name, custom_ips = Config.ISP_CONFIG.get(line_code, (None, None))
             if not line_name:
@@ -542,6 +547,9 @@ class DNSManager:
     
     def _handle_single_line(self, domain, sub_domain, line_code, line_name):
         """处理单个线路的DNS记录"""
+        masked_domain = mask_domain(domain)
+        masked_subdomain = mask_domain(sub_domain)
+        
         # 获取现有记录
         records = self.cloud.get_record(domain, 100, sub_domain, self.config.RECORD_TYPE)
         current_records = [
@@ -553,7 +561,11 @@ class DNSManager:
         # 获取优化IP
         api_result = get_optimization_ip()
         if api_result:
-            optimized_ips = api_result["info"].get(line_code, [])
+            # 如果是 IPv6，使用 DEF 线路的 IP
+            if self.config.RECORD_TYPE == "AAAA":
+                optimized_ips = api_result["info"].get("DEF", [])
+            else:
+                optimized_ips = api_result["info"].get(line_code, [])
         else:
             optimized_ips = []
 
@@ -565,22 +577,30 @@ class DNSManager:
         # 提取IP地址
         new_ips = [ip["ip"] for ip in valid_ips]
         
-        # 更新记录
-        if current_records:
-            record_id = current_records[0]["recordId"]
-            self.cloud.change_record(
-                domain, record_id, sub_domain, new_ips,
-                self.config.RECORD_TYPE, line_name, self.config.TTL
-            )
-        else:
-            self.cloud.create_record(
-                domain, sub_domain, new_ips,
-                self.config.RECORD_TYPE, line_name, self.config.TTL
-            )
+        try:
+            # 更新记录
+            if current_records:
+                record_id = current_records[0]["recordId"]
+                self.cloud.change_record(
+                    domain, record_id, sub_domain, new_ips,
+                    self.config.RECORD_TYPE, line_name, self.config.TTL
+                )
+                logging.info(f"更新记录成功 {masked_subdomain}.{masked_domain} {line_name} -> {new_ips}")
+            else:
+                self.cloud.create_record(
+                    domain, sub_domain, new_ips,
+                    self.config.RECORD_TYPE, line_name, self.config.TTL
+                )
+                logging.info(f"创建记录成功 {masked_subdomain}.{masked_domain} {line_name} -> {new_ips}")
 
-        # 删除多余记录
-        for record in current_records[1:]:
-            self.cloud.del_record(domain, record["recordId"])
+            # 删除多余记录
+            for record in current_records[1:]:
+                self.cloud.del_record(domain, record["recordId"])
+                logging.info(f"删除多余记录 {masked_subdomain}.{masked_domain} {line_name}")
+            
+        except Exception as e:
+            logging.error(f"记录操作失败 {masked_subdomain}.{masked_domain} {line_name}: {str(e)}")
+            raise
 
 def main():
     """主函数"""
