@@ -183,7 +183,7 @@ def mask_domain(domain):
 def get_optimization_ip():
     """获取优化后的 IP 地址，支持缓存"""
     global _cached_ip_data
-    record_type = RECORD_TYPE  # 当前请求的记录类型
+    record_type = RECORD_TYPE
     
     # 如果已有对应类型的缓存数据，直接返回
     if record_type == "A" and _cached_ip_data["ipv4"]:
@@ -212,7 +212,7 @@ def get_optimization_ip():
             ipv6_data = result["data"].get("v6", {})
             ipv6_result = {
                 "code": 200,
-                "info": {"DEF": []}
+                "info": {}  # 不再使用 ipv6_info
             }
             
             # 处理 IPv4 数据
@@ -233,6 +233,7 @@ def get_optimization_ip():
                 
                 sorted_v6_ips = sorted(all_v6_ips, key=lambda x: x.get("latency", float('inf')))
                 ipv6_result["info"]["DEF"] = [{"ip": ip["ip"]} for ip in sorted_v6_ips[:AFFECT_NUM]]
+                logging.info(f"获取到 IPv6 地址: {[ip['ip'] for ip in sorted_v6_ips[:AFFECT_NUM]]}")
             
             # 缓存结果
             _cached_ip_data["ipv4"] = ipv4_result
@@ -435,9 +436,9 @@ class DNSManager:
         api_result = get_optimization_ip()
         if api_result:
             if self.config.RECORD_TYPE == "AAAA":
-                optimized_ips = api_result.get("ipv6_info", {}).get("DEF", [])
+                optimized_ips = api_result["info"]["DEF"]  # 直接从 info 中获取 DEF
             else:
-                optimized_ips = api_result.get("info", {}).get(line_code, [])
+                optimized_ips = api_result["info"].get(line_code, [])
         else:
             optimized_ips = []
 
