@@ -177,98 +177,194 @@ def mask_domain(domain):
 def get_optimization_ip():
     """获取优化后的 IP 地址"""
     try:
-        if API in [API_1, API_2]:  # hostmonit 和 345673 API
-            headers = {'Content-Type': 'application/json'}
-            data = {"key": SECRETKEY, "type": "v4" if RECORD_TYPE == "A" else "v6"}
-            response = requests.post(API, json=data, headers=headers, timeout=10)
-        else:  # wetest 和 vvhan API
-            response = requests.get(API, timeout=10)
+        # 如果是 IPv6，只获取默认线路
+        if RECORD_TYPE == "AAAA":
+            if API in [API_1, API_2]:  # hostmonit 和 345673 API
+                headers = {'Content-Type': 'application/json'}
+                data = {"key": SECRETKEY, "type": "v6"}
+                response = requests.post(API, json=data, headers=headers, timeout=10)
+            else:  # wetest 和 vvhan API
+                response = requests.get(API, timeout=10)
             
-        response.raise_for_status()
-        result = response.json()
-        
-        if API == API_3:  # wetest API
-            if not result.get("status") or result.get("code") != 200 or "info" not in result:
-                logging.error(f"API 返回异常数据: {json.dumps(result)}")
-                return None
+            response.raise_for_status()
+            result = response.json()
+
+            # 处理 vvhan API
+            if API == API_4:
+                if not result.get("success") or "data" not in result:
+                    logging.error(f"API 返回异常数据: {json.dumps(result)}")
+                    return None
                 
-            # wetest API 只处理 IPv4
-            if RECORD_TYPE != "A":
-                logging.error("wetest API 只支持 IPv4 地址")
-                return None
+                ip_data = result["data"].get("v6", [])
+                if not ip_data:
+                    logging.error("未找到可用的 IPv6 地址")
+                    return None
+
+                # 合并所有运营商的 IPv6 地址
+                all_ips = []
+                seen_ips = set()  # 用于去重
+                for isp_ips in ip_data.values():
+                    for ip in isp_ips:
+                        if ip["ip"] not in seen_ips:
+                            seen_ips.add(ip["ip"])
+                            all_ips.append(ip)
                 
-            formatted_result = {
-                "code": 200,
-                "info": {}
-            }
-            
-            # 处理每个运营商的数据
-            for isp in ["CM", "CU", "CT"]:
-                if isp in result["info"] and result["info"][isp]:
-                    # 按延迟排序
-                    sorted_ips = sorted(result["info"][isp], 
-                                     key=lambda x: x.get("delay", float('inf')))
-                    # 取延迟最低的前 AFFECT_NUM 个IP
-                    best_ips = sorted_ips[:AFFECT_NUM]
-                    formatted_result["info"][isp] = [{"ip": ip["address"]} for ip in best_ips]
-                    
-                    # 记录选中IP的延迟
-                    for ip in best_ips:
-                        logging.info(f"{isp} 线路选中IP: {ip['address']}, "
-                                   f"延迟: {ip.get('delay')}ms")
-            
-            # 默认线路使用移动线路的IP
-            if "CM" in formatted_result["info"]:
-                formatted_result["info"]["DEF"] = formatted_result["info"]["CM"]
-            elif formatted_result["info"]:
-                first_available = next(iter(formatted_result["info"].values()))
-                formatted_result["info"]["DEF"] = first_available
-                logging.info("默认线路使用其他可用线路的IP")
-            
-            return formatted_result
-            
-        elif API == API_4:  # vvhan API
-            if not result.get("success") or "data" not in result:
-                logging.error(f"API 返回异常数据: {json.dumps(result)}")
-                return None
+                # 按延迟排序并选择最优的IP
+                sorted_ips = sorted(all_ips, key=lambda x: x.get("latency", float('inf')))
+                best_ips = sorted_ips[:AFFECT_NUM]
                 
-            ip_data = result["data"]["v4" if RECORD_TYPE == "A" else "v6"]
+                return {
+                    "code": 200,
+                    "info": {
+                        "DEF": [{"ip": ip["ip"]} for ip in best_ips]
+                    }
+                }
             
-            # 为每个运营商选择延迟最低的IP
-            formatted_result = {
-                "code": 200,
-                "info": {}
-            }
-            
-            for isp in ["CM", "CU", "CT"]:
-                if isp in ip_data and ip_data[isp]:
-                    # 按延迟排序，选择延迟最低的IP
-                    sorted_ips = sorted(ip_data[isp], key=lambda x: x.get("latency", float('inf')))
-                    # 取延迟最低的前 AFFECT_NUM 个IP
-                    best_ips = sorted_ips[:AFFECT_NUM]
-                    formatted_result["info"][isp] = [{"ip": ip["ip"]} for ip in best_ips]
-                    
-                    # 记录选中IP的延迟
-                    for ip in best_ips:
-                        logging.info(f"{isp} 线路选中IP: {ip['ip']}, "
-                                   f"延迟: {ip.get('latency', 'unknown')}ms")
-            
-            # 默认线路使用移动线路的IP
-            if "CM" in formatted_result["info"]:
-                formatted_result["info"]["DEF"] = formatted_result["info"]["CM"]
-            elif formatted_result["info"]:
-                first_available = next(iter(formatted_result["info"].values()))
-                formatted_result["info"]["DEF"] = first_available
-                logging.info("默认线路使用其他可用线路的IP")
-            
-            return formatted_result
-            
-        else:  # 其他 API
+            # 处理其他 API 的返回结果
             if result.get("code") != 200 or "info" not in result:
                 logging.error(f"API 返回异常数据: {json.dumps(result)}")
                 return None
-                
+            
+            # 对其他 API 返回的结果也进行去重
+            if "info" in result:
+                for line_code in result["info"]:
+                    seen_ips = set()
+                    unique_ips = []
+                    for ip_info in result["info"][line_code]:
+                        if ip_info["ip"] not in seen_ips:
+                            seen_ips.add(ip_info["ip"])
+                            unique_ips.append(ip_info)
+                    result["info"][line_code] = unique_ips[:AFFECT_NUM]
+            
             return result
+
+        # IPv4 保持原有逻辑，但添加去重
+        else:
+            if API in [API_1, API_2]:  # hostmonit 和 345673 API
+                headers = {'Content-Type': 'application/json'}
+                data = {"key": SECRETKEY, "type": "v4" if RECORD_TYPE == "A" else "v6"}
+                response = requests.post(API, json=data, headers=headers, timeout=10)
+            else:  # wetest 和 vvhan API
+                response = requests.get(API, timeout=10)
+            
+            response.raise_for_status()
+            result = response.json()
+            
+            if API == API_3:  # wetest API
+                if not result.get("status") or result.get("code") != 200 or "info" not in result:
+                    logging.error(f"API 返回异常数据: {json.dumps(result)}")
+                    return None
+                    
+                # wetest API 只处理 IPv4
+                if RECORD_TYPE != "A":
+                    logging.error("wetest API 只支持 IPv4 地址")
+                    return None
+                    
+                formatted_result = {
+                    "code": 200,
+                    "info": {}
+                }
+                
+                # 处理每个运营商的数据
+                for isp in ["CM", "CU", "CT"]:
+                    if isp in result["info"] and result["info"][isp]:
+                        # 按延迟排序
+                        sorted_ips = sorted(result["info"][isp], 
+                                         key=lambda x: x.get("delay", float('inf')))
+                        # 取延迟最低的前 AFFECT_NUM 个IP
+                        best_ips = sorted_ips[:AFFECT_NUM]
+                        formatted_result["info"][isp] = [{"ip": ip["address"]} for ip in best_ips]
+                        
+                        # 记录选中IP的延迟
+                        for ip in best_ips:
+                            logging.info(f"{isp} 线路选中IP: {ip['address']}, "
+                                       f"延迟: {ip.get('delay')}ms")
+                
+                # 默认线路使用移动线路的IP
+                if "CM" in formatted_result["info"]:
+                    formatted_result["info"]["DEF"] = formatted_result["info"]["CM"]
+                elif formatted_result["info"]:
+                    first_available = next(iter(formatted_result["info"].values()))
+                    formatted_result["info"]["DEF"] = first_available
+                    logging.info("默认线路使用其他可用线路的IP")
+                
+                # 对返回结果进行去重
+                if "info" in formatted_result:
+                    for line_code in formatted_result["info"]:
+                        seen_ips = set()
+                        unique_ips = []
+                        for ip_info in formatted_result["info"][line_code]:
+                            if ip_info["ip"] not in seen_ips:
+                                seen_ips.add(ip_info["ip"])
+                                unique_ips.append(ip_info)
+                        formatted_result["info"][line_code] = unique_ips[:AFFECT_NUM]
+                
+                return formatted_result
+                
+            elif API == API_4:  # vvhan API
+                if not result.get("success") or "data" not in result:
+                    logging.error(f"API 返回异常数据: {json.dumps(result)}")
+                    return None
+                    
+                ip_data = result["data"]["v4" if RECORD_TYPE == "A" else "v6"]
+                
+                # 为每个运营商选择延迟最低的IP
+                formatted_result = {
+                    "code": 200,
+                    "info": {}
+                }
+                
+                for isp in ["CM", "CU", "CT"]:
+                    if isp in ip_data and ip_data[isp]:
+                        # 按延迟排序，选择延迟最低的IP
+                        sorted_ips = sorted(ip_data[isp], key=lambda x: x.get("latency", float('inf')))
+                        # 取延迟最低的前 AFFECT_NUM 个IP
+                        best_ips = sorted_ips[:AFFECT_NUM]
+                        formatted_result["info"][isp] = [{"ip": ip["ip"]} for ip in best_ips]
+                        
+                        # 记录选中IP的延迟
+                        for ip in best_ips:
+                            logging.info(f"{isp} 线路选中IP: {ip['ip']}, "
+                                       f"延迟: {ip.get('latency', 'unknown')}ms")
+                
+                # 默认线路使用移动线路的IP
+                if "CM" in formatted_result["info"]:
+                    formatted_result["info"]["DEF"] = formatted_result["info"]["CM"]
+                elif formatted_result["info"]:
+                    first_available = next(iter(formatted_result["info"].values()))
+                    formatted_result["info"]["DEF"] = first_available
+                    logging.info("默认线路使用其他可用线路的IP")
+                
+                # 对返回结果进行去重
+                if "info" in formatted_result:
+                    for line_code in formatted_result["info"]:
+                        seen_ips = set()
+                        unique_ips = []
+                        for ip_info in formatted_result["info"][line_code]:
+                            if ip_info["ip"] not in seen_ips:
+                                seen_ips.add(ip_info["ip"])
+                                unique_ips.append(ip_info)
+                        formatted_result["info"][line_code] = unique_ips[:AFFECT_NUM]
+                
+                return formatted_result
+                
+            else:  # 其他 API
+                if result.get("code") != 200 or "info" not in result:
+                    logging.error(f"API 返回异常数据: {json.dumps(result)}")
+                    return None
+                    
+                # 对返回结果进行去重
+                if "info" in result:
+                    for line_code in result["info"]:
+                        seen_ips = set()
+                        unique_ips = []
+                        for ip_info in result["info"][line_code]:
+                            if ip_info["ip"] not in seen_ips:
+                                seen_ips.add(ip_info["ip"])
+                                unique_ips.append(ip_info)
+                        result["info"][line_code] = unique_ips[:AFFECT_NUM]
+                
+                return result
             
     except requests.exceptions.RequestException as e:
         logging.error(f"请求优化 IP API 失败: {str(e)}")
@@ -279,15 +375,31 @@ def get_optimization_ip():
         logging.debug(traceback.format_exc())
     return None
 
-def validate_ips(ip_list):
-    """验证 IP 列表有效性"""
-    return [ip for ip in ip_list if isinstance(ip, dict) and "ip" in ip]
+def validate_ips(ips):
+    """验证并去重 IP 列表"""
+    if not ips:
+        return []
+    
+    seen_ips = set()
+    valid_ips = []
+    
+    for ip_info in ips:
+        ip = ip_info.get("ip")
+        if ip and ip not in seen_ips:
+            seen_ips.add(ip)
+            valid_ips.append(ip_info)
+    
+    return valid_ips[:AFFECT_NUM]
 
 def handle_dns_records(cloud, domain, sub_domain, line_config):
     """处理 DNS 记录的核心逻辑"""
-    # 用于日志显示的掩码域名
     masked_domain = mask_domain(domain)
     masked_subdomain = mask_domain(sub_domain)
+    
+    # 如果是 IPv6，只处理默认线路
+    if RECORD_TYPE == "AAAA":
+        line_config = ["DEF"]
+        logging.info("IPv6 模式：仅更新默认线路")
     
     line_map = {
         "CM": ("移动", self_cm_cfips_list),
@@ -330,7 +442,7 @@ def handle_dns_records(cloud, domain, sub_domain, line_config):
             continue
 
         # 提取所有有效IP地址
-        new_ips = [ip["ip"] for ip in valid_ips[:AFFECT_NUM]]
+        new_ips = [ip["ip"] for ip in valid_ips]
         
         try:
             if current_records:
@@ -451,7 +563,7 @@ class DNSManager:
             raise ValueError(f"{line_code} 线路无有效 IP")
 
         # 提取IP地址
-        new_ips = [ip["ip"] for ip in valid_ips[:self.config.AFFECT_NUM]]
+        new_ips = [ip["ip"] for ip in valid_ips]
         
         # 更新记录
         if current_records:
