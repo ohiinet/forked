@@ -561,11 +561,10 @@ class DNSManager:
         # 获取优化IP
         api_result = get_optimization_ip()
         if api_result:
-            # 如果是 IPv6，使用 DEF 线路的 IP
             if self.config.RECORD_TYPE == "AAAA":
-                optimized_ips = api_result["info"].get("DEF", [])
+                optimized_ips = api_result.get("ipv6_info", {}).get("DEF", [])
             else:
-                optimized_ips = api_result["info"].get(line_code, [])
+                optimized_ips = api_result.get("info", {}).get(line_code, [])
         else:
             optimized_ips = []
 
