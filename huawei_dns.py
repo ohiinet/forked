@@ -5,6 +5,7 @@ import requests
 import os
 import traceback
 import logging
+import time
 from huaweicloudsdkcore.auth.credentials import BasicCredentials
 from huaweicloudsdkdns.v2 import *
 from huaweicloudsdkdns.v2.region.dns_region import DnsRegion
@@ -165,11 +166,27 @@ API_LIST = [
     }
 ]
 
-# 添加全局缓存变量
+# 添加缓存时间控制
 _cached_ip_data = {
-    "ipv4": None,
-    "ipv6": None
+    "ipv4": {"data": None, "timestamp": None},
+    "ipv6": {"data": None, "timestamp": None}
 }
+CACHE_EXPIRE_TIME = 300  # 5分钟缓存过期
+
+def get_cached_data(record_type):
+    cache = _cached_ip_data["ipv4" if record_type == "A" else "ipv6"]
+    if (cache["data"] is None or 
+        cache["timestamp"] is None or 
+        time.time() - cache["timestamp"] > CACHE_EXPIRE_TIME):
+        return None
+    return cache["data"]
+
+def set_cached_data(record_type, data):
+    cache_key = "ipv4" if record_type == "A" else "ipv6"
+    _cached_ip_data[cache_key] = {
+        "data": data,
+        "timestamp": time.time()
+    }
 
 def parse_custom_ips(ip_str):
     return [{"ip": ip.strip()} for ip in ip_str.split(',') if ip.strip()]
@@ -238,14 +255,14 @@ def get_optimization_ip(line_config=None):
     
     # IPv6 只从缓存获取数据
     if record_type == "AAAA":
-        if not _cached_ip_data["ipv6"]:
+        if not _cached_ip_data["ipv6"]["data"]:
             # 如果缓存中没有 IPv6 数据，返回 None
             return None
-        return _cached_ip_data["ipv6"]
+        return _cached_ip_data["ipv6"]["data"]
     
     # IPv4 处理逻辑
-    if _cached_ip_data["ipv4"]:
-        return _cached_ip_data["ipv4"]
+    if _cached_ip_data["ipv4"]["data"]:
+        return _cached_ip_data["ipv4"]["data"]
     
     # 获取排序后的API列表
     sorted_apis = get_api_priority()
@@ -268,8 +285,8 @@ def get_optimization_ip(line_config=None):
                 
                 # 只处理和缓存 IPv4 数据
                 ipv4_data = result["data"].get("v4", {})
-                _cached_ip_data["ipv4"] = process_ip_data(ipv4_data, "A")
-                return _cached_ip_data["ipv4"]
+                _cached_ip_data["ipv4"]["data"] = process_ip_data(ipv4_data, "A")
+                return _cached_ip_data["ipv4"]["data"]
             
         except Exception as e:
             logging.error(f"{api['name']} API处理异常: {str(e)}")
@@ -425,19 +442,37 @@ class Config:
     }
     
     def __init__(self):
-        # 从环境变量和命令行参数加载配置
+        # 修正：添加必要的属性初始化
+        self.DOMAINS = DOMAINS
+        self.SECRETID = SECRETID
+        self.SECRETKEY = SECRETKEY
         self.AFFECT_NUM = 3
         self.DNS_SERVER = os.getenv("DNS_SERVER", "3.1")
         self.TTL = int(os.getenv("TTL", 300))
         self.RECORD_TYPE = sys.argv[1] if len(sys.argv) >= 2 else "A"
         self.REGION_HW = os.getenv("REGION_HW", "cn-east-3")
-        self.API = self.API_ENDPOINTS['vvhan']  # 默认使用 vvhan API
+        
+        # 修正：移除未使用的 API 相关配置
+        self.API_PRIORITY = os.getenv("API_PRIORITY", "")
         
         # 加载自定义IP配置
         self.self_cm_cfips = ""
         self.self_cu_cfips = ""
         self.self_ct_cfips = ""
         self.self_def_cfips = ""
+
+    def validate(self):
+        """验证配置的有效性"""
+        if not self.SECRETID or not self.SECRETKEY:
+            raise ValueError("缺少华为云认证信息")
+        if not self.DOMAINS:
+            raise ValueError("未配置域名信息")
+        if self.RECORD_TYPE not in ["A", "AAAA"]:
+            raise ValueError(f"不支持的记录类型: {self.RECORD_TYPE}")
+        if self.TTL < 60:
+            raise ValueError("TTL不能小于60秒")
+        if not 1 <= self.AFFECT_NUM <= 10:
+            raise ValueError("AFFECT_NUM必须在1-10之间")
 
 class IPManager:
     """IP管理类"""
@@ -452,12 +487,20 @@ class IPManager:
             ip_str = getattr(self.config, ip_var, "")
             self._custom_ips[isp_code] = parse_custom_ips(ip_str)
     
+    def validate_ips(self, ips):
+        """验证IP地址列表的有效性"""
+        valid_ips = []
+        for ip in ips:
+            if isinstance(ip, dict) and "ip" in ip:
+                valid_ips.append(ip)
+        return valid_ips
+    
     def get_valid_ips(self, isp_code, api_ips=None):
         """获取有效的IP列表"""
         custom_ips = self._custom_ips.get(isp_code, [])
         if api_ips:
-            return validate_ips(api_ips[:self.config.AFFECT_NUM] + custom_ips)
-        return validate_ips(custom_ips)
+            return self.validate_ips(api_ips[:self.config.AFFECT_NUM] + custom_ips)
+        return self.validate_ips(custom_ips)
 
 class DNSManager:
     """DNS记录管理类"""
@@ -478,13 +521,6 @@ class DNSManager:
         else:
             full_domain = f"{sub_domain}.{domain}"
         
-        line_map = {
-            "CM": ("移动", self_cm_cfips_list),
-            "CU": ("联通", self_cu_cfips_list),
-            "CT": ("电信", self_ct_cfips_list),
-            "DEF": ("默认", self_def_cfips_list)
-        }
-
         # 获取可用 IP（传入线路配置）
         try:
             api_result = get_optimization_ip(line_config)
@@ -512,35 +548,48 @@ class DNSManager:
         masked_domain = mask_domain(domain)
         masked_subdomain = mask_domain(sub_domain)
         
-        # 获取现有记录
-        records = self.cloud.get_record(domain, 100, sub_domain, self.config.RECORD_TYPE)
-        current_records = [
-            {"recordId": r["id"], "value": r["value"]}
-            for r in records.get("data", {}).get("records", [])
-            if r.get("line") == line_name
-        ]
+        try:
+            # 获取现有记录
+            records = self.cloud.get_record(domain, 100, sub_domain, self.config.RECORD_TYPE)
+            if not records or "data" not in records:
+                raise ValueError("获取记录失败")
+                
+            current_records = [
+                {"recordId": r["id"], "value": r["value"]}
+                for r in records.get("data", {}).get("records", [])
+                if r.get("line") == line_name
+            ]
 
-        # 获取优化IP
-        api_result = get_optimization_ip()
-        if api_result:
-            if self.config.RECORD_TYPE == "AAAA":
-                optimized_ips = api_result["info"]["DEF"]  # 直接从 info 中获取 DEF
-            else:
-                optimized_ips = api_result["info"].get(line_code, [])
-        else:
-            optimized_ips = []
+            # 获取优化IP
+            api_result = get_optimization_ip()
+            if not api_result or "info" not in api_result:
+                raise ValueError("无法获取优化IP数据")
 
-        # 获取有效IP
-        valid_ips = self.ip_manager.get_valid_ips(line_code, optimized_ips)
-        if not valid_ips:
-            raise ValueError(f"{line_code} 线路无有效 IP")
+            # 获取有效IP
+            valid_ips = self.ip_manager.get_valid_ips(line_code, 
+                api_result["info"].get(line_code if self.config.RECORD_TYPE != "AAAA" else "DEF", []))
+            
+            if not valid_ips:
+                raise ValueError(f"{line_code} 线路无有效 IP")
 
-        # 提取IP地址
-        new_ips = [ip["ip"] for ip in valid_ips]
+            # 提取IP地址
+            new_ips = [ip["ip"] for ip in valid_ips]
+            
+            # 更新记录
+            self._update_dns_records(domain, sub_domain, line_name, current_records, new_ips)
+            
+        except Exception as e:
+            logging.error(f"处理记录失败 {masked_subdomain}.{masked_domain} {line_name}: {str(e)}")
+            raise
+
+    def _update_dns_records(self, domain, sub_domain, line_name, current_records, new_ips):
+        """更新DNS记录的具体实现"""
+        masked_domain = mask_domain(domain)
+        masked_subdomain = mask_domain(sub_domain)
         
         try:
-            # 更新记录
             if current_records:
+                # 更新现有记录
                 record_id = current_records[0]["recordId"]
                 self.cloud.change_record(
                     domain, record_id, sub_domain, new_ips,
@@ -548,6 +597,7 @@ class DNSManager:
                 )
                 logging.info(f"更新记录成功 {masked_subdomain}.{masked_domain} {line_name} -> {new_ips}")
             else:
+                # 创建新记录
                 self.cloud.create_record(
                     domain, sub_domain, new_ips,
                     self.config.RECORD_TYPE, line_name, self.config.TTL
@@ -558,10 +608,9 @@ class DNSManager:
             for record in current_records[1:]:
                 self.cloud.del_record(domain, record["recordId"])
                 logging.info(f"删除多余记录 {masked_subdomain}.{masked_domain} {line_name}")
-            
+                
         except Exception as e:
-            logging.error(f"记录操作失败 {masked_subdomain}.{masked_domain} {line_name}: {str(e)}")
-            raise
+            raise ValueError(f"记录操作失败: {str(e)}") from e
 
 def main():
     """主函数"""
@@ -569,10 +618,13 @@ def main():
         # 初始化配置
         config = Config()
         
+        # 验证配置
+        config.validate()
+        
         # 初始化华为云
         cloud = HuaWeiApi(
-            SECRETID, 
-            SECRETKEY, 
+            config.SECRETID, 
+            config.SECRETKEY, 
             config.REGION_HW if config.DNS_SERVER == "3.1" else None
         )
         
@@ -581,7 +633,7 @@ def main():
         dns_manager = DNSManager(cloud, config, ip_manager)
         
         # 处理域名
-        for domain, sub_domains in DOMAINS.items():
+        for domain, sub_domains in config.DOMAINS.items():
             if not isinstance(sub_domains, dict):
                 logging.error(f"域名 {mask_domain(domain)} 配置格式错误")
                 continue
@@ -591,11 +643,12 @@ def main():
                     logging.error(f"子域名 {mask_domain(sub_domain)} 配置格式错误")
                     continue
                     
-                dns_manager.update_records(domain, sub_domain, lines)
+                try:
+                    dns_manager.update_records(domain, sub_domain, lines)
+                except Exception as e:
+                    logging.error(f"更新记录失败 {mask_domain(domain)}/{mask_domain(sub_domain)}: {str(e)}")
+                    continue
                 
-    except RuntimeError as e:
-        logging.error(f"无法获取IP数据: {str(e)}")
-        sys.exit(1)
     except Exception as e:
         logging.error(f"程序执行失败: {str(e)}")
         logging.debug(traceback.format_exc())
