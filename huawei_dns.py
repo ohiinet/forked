@@ -212,7 +212,7 @@ def mask_domain(domain):
 
 def get_api_priority():
     """从环境变量获取API优先级配置"""
-    priority_str = os.getenv("API_PRIORITY", "")
+    priority_str = os.getenv("API_PRIORITY", "1,3,4,2")
     if not priority_str:
         return API_LIST  # 如果没有配置，使用默认优先级
     
