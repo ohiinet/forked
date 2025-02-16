@@ -1,3 +1,5 @@
 huaweicloudsdkcore==3.1.5
 huaweicloudsdkdns==3.1.5
 requests==2.31.0
+requests-html==0.10.0
+beautifulsoup4==4.12.2
