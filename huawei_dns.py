@@ -257,21 +257,6 @@ def get_optimization_ip(line_config=None):
     if cached_data:
         return cached_data
     
-    # IPv6 处理
-    if record_type == "AAAA":
-        logging.warning("当前 API 不支持 IPv6 地址获取")
-        # 可以在这里添加默认的 IPv6 地址或者其他处理逻辑
-        return {
-            "code": 200,
-            "info": {
-                "DEF": [],  # 可以添加默认的 IPv6 地址
-                "CM": [],
-                "CU": [],
-                "CT": []
-            }
-        }
-    
-    # IPv4 处理逻辑保持不变
     sorted_apis = get_api_priority()
     
     for api in sorted_apis:
@@ -289,9 +274,14 @@ def get_optimization_ip(line_config=None):
                     logging.warning(f"{api['name']} API 返回异常数据: {json.dumps(result)}")
                     continue
                 
-                ipv4_data = result["data"].get("v4", {})
-                processed_data = process_ip_data(ipv4_data, "A")
-                set_cached_data("A", processed_data)
+                # 根据记录类型选择 v4 或 v6 数据
+                ip_data = result["data"].get("v6" if record_type == "AAAA" else "v4", {})
+                if not ip_data:
+                    logging.warning(f"{api['name']} API 未返回 {record_type} 记录数据")
+                    continue
+                    
+                processed_data = process_ip_data(ip_data, record_type)
+                set_cached_data(record_type, processed_data)
                 return processed_data
             
         except Exception as e:
