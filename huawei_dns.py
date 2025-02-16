@@ -145,7 +145,7 @@ REGION_HW = os.getenv("REGION_HW", "cn-east-3")
 # API 配置
 API_LIST = [
     {
-        'url': 'https://api.vvhan.com/tool/cf_ip',
+        'url': 'https://api.vvhan.com/tool/cf_ip1',
         'name': 'vvhan',
         'id': 1  # API序号
     },
@@ -212,7 +212,7 @@ def mask_domain(domain):
 
 def get_api_priority():
     """从环境变量获取API优先级配置"""
-    priority_str = os.getenv("API_PRIORITY", "1,4,3,2")
+    priority_str = os.getenv("API_PRIORITY", "")
     if not priority_str:
         return API_LIST  # 如果没有配置，使用默认优先级
     
@@ -248,6 +248,69 @@ def get_api_priority():
         logging.warning(f"API优先级配置解析失败: {str(e)}，使用默认顺序")
         return API_LIST
 
+def process_ip_data(data, record_type, api_name):
+    """处理IP数据，返回处理后的结果"""
+    result = {
+        "code": 200,
+        "info": {}
+    }
+    
+    if api_name == 'vvhan':
+        # vvhan API 格式处理
+        ip_data = data.get("v6" if record_type == "AAAA" else "v4", {})
+        if not ip_data:
+            return None
+            
+        all_ips = []
+        seen_ips = set()
+        for isp_ips in ip_data.values():
+            for ip in isp_ips:
+                if ip["ip"] not in seen_ips:
+                    seen_ips.add(ip["ip"])
+                    all_ips.append(ip)
+        
+        sorted_ips = sorted(all_ips, key=lambda x: x.get("latency", float('inf')))
+        best_ips = [{"ip": ip["ip"]} for ip in sorted_ips[:AFFECT_NUM]]
+        
+        for line_code in ["CM", "CU", "CT"]:
+            if line_code in ip_data:
+                line_ips = sorted(ip_data[line_code], key=lambda x: x.get("latency", float('inf')))
+                result["info"][line_code] = [{"ip": ip["ip"]} for ip in line_ips[:AFFECT_NUM]]
+        
+        result["info"]["DEF"] = best_ips
+        
+    elif api_name in ['hostmonit', 'wetest']:
+        # hostmonit 和 wetest API 格式处理
+        if not isinstance(data, list):
+            return None
+            
+        # 按运营商分类IP
+        isp_ips = {"CM": [], "CU": [], "CT": [], "DEF": []}
+        for ip_info in data:
+            ip = ip_info.get("ip")
+            isp = ip_info.get("isp", "DEF")
+            if ip:
+                isp_ips[isp].append({"ip": ip})
+        
+        # 为每个运营商选择IP
+        for isp in isp_ips:
+            if isp_ips[isp]:
+                result["info"][isp] = isp_ips[isp][:AFFECT_NUM]
+        
+    elif api_name == 'vps789':
+        # vps789 API 格式处理
+        if not isinstance(data, dict):
+            return None
+            
+        result["info"] = {
+            "CT": [{"ip": ip["ip"]} for ip in data.get("CT", [])[:AFFECT_NUM]],
+            "CU": [{"ip": ip["ip"]} for ip in data.get("CU", [])[:AFFECT_NUM]],
+            "CM": [{"ip": ip["ip"]} for ip in data.get("CM", [])[:AFFECT_NUM]],
+            "DEF": [{"ip": ip["ip"]} for ip in data.get("AllAvg", [])[:AFFECT_NUM]]
+        }
+    
+    return result
+
 def get_optimization_ip(line_config=None):
     """获取优化后的 IP 地址"""
     record_type = RECORD_TYPE
@@ -271,16 +334,23 @@ def get_optimization_ip(line_config=None):
             
             if api['name'] == 'vvhan':
                 if not result.get("success") or "data" not in result:
-                    logging.warning(f"{api['name']} API 返回异常数据: {json.dumps(result)}")
+                    logging.warning(f"{api['name']} API 返回异常数据")
                     continue
+                processed_data = process_ip_data(result["data"], record_type, api['name'])
                 
-                # 根据记录类型选择 v4 或 v6 数据
-                ip_data = result["data"].get("v6" if record_type == "AAAA" else "v4", {})
-                if not ip_data:
-                    logging.warning(f"{api['name']} API 未返回 {record_type} 记录数据")
+            elif api['name'] in ['hostmonit', 'wetest']:
+                if not isinstance(result, list):
+                    logging.warning(f"{api['name']} API 返回异常数据")
                     continue
-                    
-                processed_data = process_ip_data(ip_data, record_type)
+                processed_data = process_ip_data(result, record_type, api['name'])
+                
+            elif api['name'] == 'vps789':
+                if result.get("code") != 0 or "data" not in result:
+                    logging.warning(f"{api['name']} API 返回异常数据")
+                    continue
+                processed_data = process_ip_data(result["data"], record_type, api['name'])
+            
+            if processed_data:
                 set_cached_data(record_type, processed_data)
                 return processed_data
             
@@ -291,37 +361,6 @@ def get_optimization_ip(line_config=None):
     error_msg = "所有API都无法获取IP数据"
     logging.error(error_msg)
     raise RuntimeError(error_msg)
-
-def process_ip_data(data, record_type):
-    """处理IP数据，返回处理后的结果"""
-    result = {
-        "code": 200,
-        "info": {}
-    }
-    
-    # 收集所有IP
-    all_ips = []
-    seen_ips = set()
-    for isp_ips in data.values():
-        for ip in isp_ips:
-            if ip["ip"] not in seen_ips:
-                seen_ips.add(ip["ip"])
-                all_ips.append(ip)
-    
-    # 按延迟排序
-    sorted_ips = sorted(all_ips, key=lambda x: x.get("latency", float('inf')))
-    best_ips = [{"ip": ip["ip"]} for ip in sorted_ips[:AFFECT_NUM]]
-    
-    # 为每个运营商准备IP列表
-    for line_code in ["CM", "CU", "CT"]:
-        if line_code in data:
-            line_ips = sorted(data[line_code], key=lambda x: x.get("latency", float('inf')))
-            result["info"][line_code] = [{"ip": ip["ip"]} for ip in line_ips[:AFFECT_NUM]]
-    
-    # 添加默认线路的IP（使用全局最优IP）
-    result["info"]["DEF"] = best_ips
-    
-    return result
 
 def get_line_ips(api_result, line_code, has_default_line):
     """根据线路配置获取对应的IP列表"""
