@@ -250,24 +250,30 @@ def get_api_priority():
 
 def get_optimization_ip(line_config=None):
     """获取优化后的 IP 地址"""
-    global _cached_ip_data
     record_type = RECORD_TYPE
     
-    # IPv6 只从缓存获取数据
+    # 检查缓存
+    cached_data = get_cached_data(record_type)
+    if cached_data:
+        return cached_data
+    
+    # IPv6 处理
     if record_type == "AAAA":
-        if not _cached_ip_data["ipv6"]["data"]:
-            # 如果缓存中没有 IPv6 数据，返回 None
-            return None
-        return _cached_ip_data["ipv6"]["data"]
+        logging.warning("当前 API 不支持 IPv6 地址获取")
+        # 可以在这里添加默认的 IPv6 地址或者其他处理逻辑
+        return {
+            "code": 200,
+            "info": {
+                "DEF": [],  # 可以添加默认的 IPv6 地址
+                "CM": [],
+                "CU": [],
+                "CT": []
+            }
+        }
     
-    # IPv4 处理逻辑
-    if _cached_ip_data["ipv4"]["data"]:
-        return _cached_ip_data["ipv4"]["data"]
-    
-    # 获取排序后的API列表
+    # IPv4 处理逻辑保持不变
     sorted_apis = get_api_priority()
     
-    # 遍历所有API尝试获取数据
     for api in sorted_apis:
         try:
             api_id = api['id']
@@ -283,10 +289,10 @@ def get_optimization_ip(line_config=None):
                     logging.warning(f"{api['name']} API 返回异常数据: {json.dumps(result)}")
                     continue
                 
-                # 只处理和缓存 IPv4 数据
                 ipv4_data = result["data"].get("v4", {})
-                _cached_ip_data["ipv4"]["data"] = process_ip_data(ipv4_data, "A")
-                return _cached_ip_data["ipv4"]["data"]
+                processed_data = process_ip_data(ipv4_data, "A")
+                set_cached_data("A", processed_data)
+                return processed_data
             
         except Exception as e:
             logging.error(f"{api['name']} API处理异常: {str(e)}")
