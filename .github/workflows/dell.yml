@@ -21,7 +21,7 @@ jobs:
           repository: ${{ github.repository }}
           retain_days: 0               # 保留0天
           keep_minimum_runs: 0         # 不保留任何记录
-          delete_workflow_pattern: '.*' # 匹配所有工作流
+          delete_workflow_pattern: DNS Auto-Update 
 
       - name: Delete Self
         uses: Mattraks/delete-workflow-runs@v2
@@ -30,4 +30,4 @@ jobs:
           repository: ${{ github.repository }}
           retain_days: 1               # 保留1天
           keep_minimum_runs: 1         # 保留至少1个运行
-          delete_workflow_pattern: '.*' # 匹配所有工作流
+          delete_workflow_pattern: Delete All Workflow Runs
